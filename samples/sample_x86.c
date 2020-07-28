@@ -1026,48 +1026,186 @@ static void test_x86_16(void)
     uc_close(uc);
 }
 
-int main(int argc, char **argv, char **envp)
+#if 0
+int main(int argc, char** argv, char** envp)
 {
-    if (argc == 2) {
-        if (!strcmp(argv[1], "-16")) {
-            test_x86_16();
-        }
-        else if (!strcmp(argv[1], "-32")) {
-            test_i386();
-            test_i386_map_ptr();
-            test_i386_inout();
-            test_i386_context_save();
-            test_i386_jump();
-            test_i386_loop();
-            test_i386_invalid_mem_read();
-            test_i386_invalid_mem_write();
-            test_i386_jump_invalid();
-            //test_i386_invalid_c6c7();
-        }
-        else if (!strcmp(argv[1], "-64")) {
-            test_x86_64();
-            test_x86_64_syscall();
-        }
-        else if (!strcmp(argv[1], "-h")) {
-            printf("Syntax: %s <-16|-32|-64>\n", argv[0]);
-        }
-   }
-   else {
-        test_x86_16();
-        test_i386();
-        test_i386_map_ptr();
-        test_i386_inout();
-        test_i386_context_save();
-        test_i386_jump();
-        test_i386_loop();
-        test_i386_invalid_mem_read();
-        test_i386_invalid_mem_write();
-        test_i386_jump_invalid();
-        //test_i386_invalid_c6c7();
-        test_x86_64();
-        test_x86_64_syscall();
 
+
+
+
+	if (argc == 2) {
+		if (!strcmp(argv[1], "-16")) {
+			test_x86_16();
+		}
+		else if (!strcmp(argv[1], "-32")) {
+			test_i386();
+			test_i386_map_ptr();
+			test_i386_inout();
+			test_i386_context_save();
+			test_i386_jump();
+			test_i386_loop();
+			test_i386_invalid_mem_read();
+			test_i386_invalid_mem_write();
+			test_i386_jump_invalid();
+			//test_i386_invalid_c6c7();
+		}
+		else if (!strcmp(argv[1], "-64")) {
+			test_x86_64();
+			test_x86_64_syscall();
+		}
+		else if (!strcmp(argv[1], "-h")) {
+			printf("Syntax: %s <-16|-32|-64>\n", argv[0]);
+		}
+	}
+	else {
+		test_x86_16();
+		test_i386();
+		test_i386_map_ptr();
+		test_i386_inout();
+		test_i386_context_save();
+		test_i386_jump();
+		test_i386_loop();
+		test_i386_invalid_mem_read();
+		test_i386_invalid_mem_write();
+		test_i386_jump_invalid();
+		//test_i386_invalid_c6c7();
+		test_x86_64();
+		test_x86_64_syscall();
+
+	}
+
+	return 0;
+}
+#endif
+
+//0193DE53     8B00                 MOV EAX, DWORD PTR DS : [EAX]
+//0193DE55     05 00100000          ADD EAX, 1000
+//0193DE5A     0305 FFFFFFFF        ADD EAX, DWORD PTR DS : [FFFFFFFF]
+
+#define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\x03\x05\xFF\xFF\xFF\xFF"
+#define TEST_HOOK_CODE_SIZE 7
+
+
+bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
+	uint64_t address, int size, int64_t value, void* user_data)
+{
+	int r_eax;     // EAX register
+	int r_ip ;
+    uc_reg_read(uc, UC_X86_REG_EIP, &r_ip);
+    if (r_ip >= ADDRESS + TEST_HOOK_CODE_SIZE) {
+        return false;
     }
+	switch (type) {
+	    case UC_MEM_READ:               // Memory is read from
+	    {
+            printf("UC_MEM_READ HOOK\r\n");
+	    }break;
+	    case UC_MEM_WRITE:              // Memory is written to
+	    {
+            printf("UC_MEM_WRITE HOOK\r\n");
+	    }break;
+	    case UC_MEM_FETCH:              // Memory is fetched
+	    {
+            printf("UC_MEM_FETCH HOOK\r\n");
+	    }break;
+	    case UC_MEM_READ_UNMAPPED:      // Unmapped memory is read from
+	    {
+            printf("UC_MEM_READ_UNMAPPED HOOK\r\n");
+            return true;
+	    }break;
+	    case UC_MEM_WRITE_UNMAPPED:     // Unmapped memory is written to
+	    {
+            printf("UC_MEM_WRITE_UNMAPPED HOOK\r\n");
+            return true;
+	    }break;
+	    case UC_MEM_FETCH_UNMAPPED:     // Unmapped memory is fetched
+	    {
+            printf("UC_MEM_FETCH_UNMAPPED HOOK\r\n");
+            return true;
+	    }break;
+	    case UC_MEM_WRITE_PROT:         // Write to write protected: but mapped: memory
+	    {
+            printf("UC_MEM_WRITE_PROT HOOK\r\n");
+            return true;
+	    }break;
+	    case UC_MEM_READ_PROT:          // Read from read protected: but mapped: memory
+	    {
+            printf("UC_MEM_READ_PROT HOOK\r\n");
+            return true;
+	    }break;
+	    case UC_MEM_FETCH_PROT:         // Fetch from non-executable: but mapped: memory
+	    {
+            printf("UC_MEM_FETCH_PROT HOOK\r\n");
+            return true;
+	    }break;
+	}
 
-    return 0;
+    //if (type == UC_MEM_READ_UNMAPPED)
+    //{
+    //	uc_reg_read(uc, UC_X86_REG_EAX, &r_eax);
+    //	uc_reg_read(uc, UC_X86_REG_EIP, &r_ip);
+    //	return true;
+    //}
+	return false;
+}
+
+#define BUFF_ADDRESS        0x2000000
+static void test_i386hook(void)
+{
+	uc_engine* uc;
+	uc_err err;
+	uint32_t tmp;
+	uc_hook trace1, trace2;
+
+	int r_eax = BUFF_ADDRESS;     // EAX register
+
+	err = uc_open(UC_ARCH_X86, UC_MODE_32, &uc);
+	if (err) {
+		printf("Failed on open() with error returned: %u\n", err);
+		return;
+	}
+
+	uc_mem_map(uc, ADDRESS, 2 * 1024 * 1024, UC_PROT_ALL);
+	if (uc_mem_write(uc, ADDRESS, TEST_HOOK_CODE, sizeof(TEST_HOOK_CODE) - 1)) {
+		printf("Failed to write code to memory, quit!\n");
+		return;
+	}
+
+    char* szbuff = "\x04\x03\x02\x01";
+    uc_mem_map(uc, BUFF_ADDRESS, 2 * 1024 * 1024, UC_PROT_ALL);
+    if (uc_mem_write(uc, BUFF_ADDRESS, szbuff, 4)) {
+        printf("Failed to write code to memory, quit!\n");
+        return;
+    }
+    qemu_get_ram_ptr()
+
+	uc_reg_write(uc, UC_X86_REG_EAX, &r_eax);
+
+	uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED |
+        UC_HOOK_MEM_READ_PROT | UC_HOOK_MEM_WRITE_PROT | UC_HOOK_MEM_FETCH_PROT |
+        UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH
+        , mem_read_operation_invalid, NULL, 1, 0);
+
+	uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
+
+	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code, NULL, 1, 0);
+
+	err = uc_emu_start(uc, ADDRESS, ADDRESS + sizeof(X86_CODE32) - 1, 0, 0);
+	if (err) {
+		printf("Failed on uc_emu_start() with error returned %u: %s\n",
+			err, uc_strerror(err));
+	}
+
+	uc_reg_read(uc, UC_X86_REG_EAX, &r_eax);
+
+	uc_close(uc);
+}
+
+
+
+int main(int argc, char** argv, char** envp)
+{
+	//test_i386_invalid_mem_write();
+	test_i386hook();
+	return 0;
 }

@@ -56,6 +56,8 @@ static void test_arm(void)
     uc_reg_write(uc, UC_ARM_REG_R2, &r2);
     uc_reg_write(uc, UC_ARM_REG_R3, &r3);
 
+	uc_assert_success(uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED, mem_hook_i386, NULL, 1, 0));
+
     // tracing all basic blocks with customized callback
     uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
 
