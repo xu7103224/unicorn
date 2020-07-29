@@ -223,6 +223,7 @@ typedef enum uc_mem_type {
     UC_MEM_READ_PROT,   // Read from read protected, but mapped, memory
     UC_MEM_FETCH_PROT,  // Fetch from non-executable, but mapped, memory
     UC_MEM_READ_AFTER,   // Memory is read from (successful access)
+    UC_MEM_READING,   // Memory is reading now
 } uc_mem_type;
 
 // All type of hooks for uc_hook_add() API.
@@ -258,6 +259,8 @@ typedef enum uc_hook_type {
     UC_HOOK_MEM_READ_AFTER = 1 << 13,
     // Hook invalid instructions exceptions.
     UC_HOOK_INSN_INVALID = 1 << 14,
+    // Hook memory reading events
+    UC_HOOK_MEM_READING = 1 << 15,
 } uc_hook_type;
 
 // Hook type for all events of unmapped memory access

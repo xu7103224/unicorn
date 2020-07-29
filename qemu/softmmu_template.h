@@ -404,11 +404,28 @@ WORD_TYPE helper_le_ld_name(CPUArchState *env, target_ulong addr, int mmu_idx,
 #endif
 
     haddr = (uintptr_t)(addr + env->tlb_table[mmu_idx][index].addend);
-#if DATA_SIZE == 1
-    res = glue(glue(ld, LSUFFIX), _p)((uint8_t *)haddr);
-#else
-    res = glue(glue(ld, LSUFFIX), _le_p)((uint8_t *)haddr);
+#define ENABLE_HOOK_READING
+#ifdef ENABLE_HOOK_READING
+    // Unicorn: callback on successful read
+    if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
+		HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READING) {
+			if (hook->to_delete)
+				continue;
+			if (!HOOK_BOUND_CHECK(hook, addr))
+				continue;
+            handled = ((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READING, addr, DATA_SIZE, res, hook->user_data);
+		}
+
+    }
+    else
 #endif
+    {
+#if DATA_SIZE == 1
+        res = glue(glue(ld, LSUFFIX), _p)((uint8_t*)haddr);
+#else
+        res = glue(glue(ld, LSUFFIX), _le_p)((uint8_t*)haddr);
+#endif
+    }
 
 _out:
     // Unicorn: callback on successful read

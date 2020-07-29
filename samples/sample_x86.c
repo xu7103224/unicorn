@@ -1138,6 +1138,12 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
             printf("UC_MEM_FETCH_PROT HOOK\r\n");
             return true;
 	    }break;
+        case UC_MEM_READING:
+        {
+            printf("UC_MEM_READING HOOK\r\n");
+            return true;
+        }break;
+
 	}
 
     //if (type == UC_MEM_READ_UNMAPPED)
@@ -1177,13 +1183,13 @@ static void test_i386hook(void)
         printf("Failed to write code to memory, quit!\n");
         return;
     }
-    qemu_get_ram_ptr()
+    //qemu_get_ram_ptr()
 
 	uc_reg_write(uc, UC_X86_REG_EAX, &r_eax);
 
 	uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED |
         UC_HOOK_MEM_READ_PROT | UC_HOOK_MEM_WRITE_PROT | UC_HOOK_MEM_FETCH_PROT |
-        UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH
+        UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH | UC_HOOK_MEM_READING
         , mem_read_operation_invalid, NULL, 1, 0);
 
 	uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
