@@ -1092,7 +1092,12 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 	int r_eax;     // EAX register
 	int r_ip ;
     uc_reg_read(uc, UC_X86_REG_EIP, &r_ip);
+    if (address == 0xffffffff || address == 0xffffffffffffffff) {
+        uc_emu_stop(uc);
+        return false;
+    }
     if (r_ip >= ADDRESS + TEST_HOOK_CODE_SIZE) {
+        uc_emu_stop(uc);
         return false;
     }
 	switch (type) {
@@ -1140,6 +1145,8 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 	    }break;
         case UC_MEM_READING:
         {
+            void* returnData = (void*)value;
+            memcpy(returnData, address, size);
             printf("UC_MEM_READING HOOK\r\n");
             return true;
         }break;
@@ -1156,6 +1163,9 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 }
 
 #define BUFF_ADDRESS        0x2000000
+
+char* testReadDest = "\x06\x03\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
 static void test_i386hook(void)
 {
 	uc_engine* uc;
@@ -1163,7 +1173,8 @@ static void test_i386hook(void)
 	uint32_t tmp;
 	uc_hook trace1, trace2;
 
-	int r_eax = BUFF_ADDRESS;     // EAX register
+	//int r_eax = BUFF_ADDRESS;     // EAX register
+    int r_eax = (int)testReadDest;     // EAX register
 
 	err = uc_open(UC_ARCH_X86, UC_MODE_32, &uc);
 	if (err) {

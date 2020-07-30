@@ -181,267 +181,272 @@ static inline DATA_TYPE glue(io_read, SUFFIX)(CPUArchState *env,
 #ifdef SOFTMMU_CODE_ACCESS
 static QEMU_UNUSED_FUNC
 #endif
-WORD_TYPE helper_le_ld_name(CPUArchState *env, target_ulong addr, int mmu_idx,
-                            uintptr_t retaddr)
+WORD_TYPE helper_le_ld_name(CPUArchState* env, target_ulong addr, int mmu_idx,
+	uintptr_t retaddr)
 {
-    int index = (addr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
-    target_ulong tlb_addr = env->tlb_table[mmu_idx][index].ADDR_READ;
-    uintptr_t haddr;
-    DATA_TYPE res;
-    int error_code;
-    struct hook *hook;
-    bool handled;
-    HOOK_FOREACH_VAR_DECLARE;
+	int index = (addr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
+	target_ulong tlb_addr = env->tlb_table[mmu_idx][index].ADDR_READ;
+	uintptr_t haddr;
+	DATA_TYPE res;
+	int error_code;
+	struct hook* hook;
+	bool handled;
+	HOOK_FOREACH_VAR_DECLARE;
 
-    struct uc_struct *uc = env->uc;
-    MemoryRegion *mr = memory_mapping(uc, addr);
+	struct uc_struct* uc = env->uc;
+	MemoryRegion* mr = memory_mapping(uc, addr);
 
-    // memory might be still unmapped while reading or fetching
-    if (mr == NULL) {
-        handled = false;
-#if defined(SOFTMMU_CODE_ACCESS)
-        error_code = UC_ERR_FETCH_UNMAPPED;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_FETCH_UNMAPPED) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_FETCH_UNMAPPED, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
-                break;
-        }
-#else
-        error_code = UC_ERR_READ_UNMAPPED;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_UNMAPPED) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_READ_UNMAPPED, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
-                break;
-        }
-#endif
-        if (handled) {
-            env->invalid_error = UC_ERR_OK;
-            mr = memory_mapping(uc, addr);  // FIXME: what if mr is still NULL at this time?
-        } else {
-            env->invalid_addr = addr;
-            env->invalid_error = error_code;
-            // printf("***** Invalid fetch (unmapped memory) at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(uc->current_cpu);
-            return 0;
-        }
-    }
-
-#if defined(SOFTMMU_CODE_ACCESS)
-    // Unicorn: callback on fetch from NX
-    if (mr != NULL && !(mr->perms & UC_PROT_EXEC)) {  // non-executable
-        handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_FETCH_PROT) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_FETCH_PROT, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
-                break;
-        }
-
-        if (handled) {
-            env->invalid_error = UC_ERR_OK;
-        } else {
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_FETCH_PROT;
-            // printf("***** Invalid fetch (non-executable) at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(uc->current_cpu);
-            return 0;
-        }
-    }
-#endif
-
-    // Unicorn: callback on memory read
-    // NOTE: this happens before the actual read, so we cannot tell
-    // the callback if read access is succesful, or not.
-    // See UC_HOOK_MEM_READ_AFTER & UC_MEM_READ_AFTER if you only care
-    // about successful read
-    if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
-        if (!uc->size_recur_mem) { // disabling read callback if in recursive call
-            HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
-              if (hook->to_delete)
-                  continue;
-              if (!HOOK_BOUND_CHECK(hook, addr))
-                    continue;
-                ((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ, addr, DATA_SIZE, 0, hook->user_data);
-            }
-        }
-    }
-
-    // Unicorn: callback on non-readable memory
-    if (READ_ACCESS_TYPE == MMU_DATA_LOAD && mr != NULL && !(mr->perms & UC_PROT_READ)) {  //non-readable
-        handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_PROT) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_READ_PROT, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
-                break;
-        }
-
-        if (handled) {
-            env->invalid_error = UC_ERR_OK;
-        } else {
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_READ_PROT;
-            // printf("***** Invalid memory read (non-readable) at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(uc->current_cpu);
-            return 0;
-        }
-    }
-
-    /* Adjust the given return address.  */
-    retaddr -= GETPC_ADJ;
-
-    /* If the TLB entry is for a different page, reload and try again.  */
-    /* If the TLB entry addend is invalidated by any callbacks (perhaps due to
-       a TLB flush), reload and try again.  */
-    if ((addr & TARGET_PAGE_MASK)
-         != (tlb_addr & (TARGET_PAGE_MASK | TLB_INVALID_MASK))
-         || env->tlb_table[mmu_idx][index].addend == -1) {
-#ifdef ALIGNED_ONLY
-        if ((addr & (DATA_SIZE - 1)) != 0) {
-            //cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
-            //                     mmu_idx, retaddr);
-            env->invalid_addr = addr;
-#if defined(SOFTMMU_CODE_ACCESS)
-            env->invalid_error = UC_ERR_FETCH_UNALIGNED;
-#else
-            env->invalid_error = UC_ERR_READ_UNALIGNED;
-#endif
-            cpu_exit(uc->current_cpu);
-            return 0;
-        }
-#endif
-        if (!victim_tlb_hit_read(env, addr, mmu_idx, index)) {
-            tlb_fill(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
-                     mmu_idx, retaddr);
-        }
-        tlb_addr = env->tlb_table[mmu_idx][index].ADDR_READ;
-    }
-
-    /* Handle an IO access.  */
-    if (unlikely(tlb_addr & ~TARGET_PAGE_MASK)) {
-        hwaddr ioaddr;
-        if ((addr & (DATA_SIZE - 1)) != 0) {
-            goto do_unaligned_access;
-        }
-        ioaddr = env->iotlb[mmu_idx][index];
-        if (ioaddr == 0) {
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_READ_UNMAPPED;
-            // printf("Invalid memory read at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(env->uc->current_cpu);
-            return 0;
-        } else {
-            env->invalid_error = UC_ERR_OK;
-        }
-
-        /* ??? Note that the io helpers always read data in the target
-           byte ordering.  We should push the LE/BE request down into io.  */
-        res = glue(io_read, SUFFIX)(env, ioaddr, addr, retaddr);
-        res = TGT_LE(res);
-        goto _out;
-    }
-
-    /* Handle slow unaligned access (it spans two pages or IO).  */
-    if (DATA_SIZE > 1
-        && unlikely((addr & ~TARGET_PAGE_MASK) + DATA_SIZE - 1
-                    >= TARGET_PAGE_SIZE)) {
-        target_ulong addr1, addr2;
-        DATA_TYPE res1, res2;
-        unsigned shift;
-    do_unaligned_access:
-#ifdef ALIGNED_ONLY
-        //cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
-        //                     mmu_idx, retaddr);
-        env->invalid_addr = addr;
-#if defined(SOFTMMU_CODE_ACCESS)
-        env->invalid_error = UC_ERR_FETCH_UNALIGNED;
-#else
-        env->invalid_error = UC_ERR_READ_UNALIGNED;
-#endif
-        cpu_exit(uc->current_cpu);
-        return 0;
-#endif
-        addr1 = addr & ~(DATA_SIZE - 1);
-        addr2 = addr1 + DATA_SIZE;
-        /* Note the adjustment at the beginning of the function.
-           Undo that for the recursion.  */
-        uc->size_recur_mem = DATA_SIZE - (addr - addr1); // size already treated by callback
-        res1 = helper_le_ld_name(env, addr1, mmu_idx, retaddr + GETPC_ADJ);
-        uc->size_recur_mem = (addr2 - addr);
-        res2 = helper_le_ld_name(env, addr2, mmu_idx, retaddr + GETPC_ADJ);
-        uc->size_recur_mem = 0;
-        shift = (addr & (DATA_SIZE - 1)) * 8;
-
-        /* Little-endian combine.  */
-        res = (res1 >> shift) | (res2 << ((DATA_SIZE * 8) - shift));
-        goto _out;
-    }
-
-    /* Handle aligned access or unaligned access in the same page.  */
-#ifdef ALIGNED_ONLY
-    if ((addr & (DATA_SIZE - 1)) != 0) {
-        //cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
-        //                     mmu_idx, retaddr);
-        env->invalid_addr = addr;
-#if defined(SOFTMMU_CODE_ACCESS)
-        env->invalid_error = UC_ERR_FETCH_UNALIGNED;
-#else
-        env->invalid_error = UC_ERR_READ_UNALIGNED;
-#endif
-        cpu_exit(uc->current_cpu);
-        return 0;
-    }
-#endif
-
-    haddr = (uintptr_t)(addr + env->tlb_table[mmu_idx][index].addend);
 #define ENABLE_HOOK_READING
 #ifdef ENABLE_HOOK_READING
-    // Unicorn: callback on successful read
-    if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
+    handled = false;
+
+	// Unicorn: callback on successful read
+	if (mr == NULL) {
 		HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READING) {
 			if (hook->to_delete)
 				continue;
-			if (!HOOK_BOUND_CHECK(hook, addr))
-				continue;
-            handled = ((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READING, addr, DATA_SIZE, res, hook->user_data);
+			handled = ((uc_cb_mem_operating_t)hook->callback)(env->uc, UC_MEM_READING, addr, DATA_SIZE, &res, hook->user_data);
+		}
+	}
+
+	if (!handled)
+#endif
+	{
+		// memory might be still unmapped while reading or fetching
+		if (mr == NULL) {
+			handled = false;
+#if defined(SOFTMMU_CODE_ACCESS)
+			error_code = UC_ERR_FETCH_UNMAPPED;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_FETCH_UNMAPPED) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_FETCH_UNMAPPED, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
+					break;
+			}
+#else
+			error_code = UC_ERR_READ_UNMAPPED;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_UNMAPPED) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_READ_UNMAPPED, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
+					break;
+			}
+#endif
+			if (handled) {
+				env->invalid_error = UC_ERR_OK;
+				mr = memory_mapping(uc, addr);  // FIXME: what if mr is still NULL at this time?
+			}
+			else {
+				env->invalid_addr = addr;
+				env->invalid_error = error_code;
+				// printf("***** Invalid fetch (unmapped memory) at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(uc->current_cpu);
+				return 0;
+			}
 		}
 
-    }
-    else
+#if defined(SOFTMMU_CODE_ACCESS)
+		// Unicorn: callback on fetch from NX
+		if (mr != NULL && !(mr->perms & UC_PROT_EXEC)) {  // non-executable
+			handled = false;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_FETCH_PROT) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_FETCH_PROT, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
+					break;
+			}
+
+			if (handled) {
+				env->invalid_error = UC_ERR_OK;
+			}
+			else {
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_FETCH_PROT;
+				// printf("***** Invalid fetch (non-executable) at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(uc->current_cpu);
+				return 0;
+			}
+		}
 #endif
-    {
-#if DATA_SIZE == 1
-        res = glue(glue(ld, LSUFFIX), _p)((uint8_t*)haddr);
+
+		// Unicorn: callback on memory read
+		// NOTE: this happens before the actual read, so we cannot tell
+		// the callback if read access is succesful, or not.
+		// See UC_HOOK_MEM_READ_AFTER & UC_MEM_READ_AFTER if you only care
+		// about successful read
+		if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
+			if (!uc->size_recur_mem) { // disabling read callback if in recursive call
+				HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
+					if (hook->to_delete)
+						continue;
+					if (!HOOK_BOUND_CHECK(hook, addr))
+						continue;
+					((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ, addr, DATA_SIZE, 0, hook->user_data);
+				}
+			}
+		}
+
+		// Unicorn: callback on non-readable memory
+		if (READ_ACCESS_TYPE == MMU_DATA_LOAD && mr != NULL && !(mr->perms & UC_PROT_READ)) {  //non-readable
+			handled = false;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_PROT) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_READ_PROT, addr, DATA_SIZE - uc->size_recur_mem, 0, hook->user_data)))
+					break;
+			}
+
+			if (handled) {
+				env->invalid_error = UC_ERR_OK;
+			}
+			else {
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_READ_PROT;
+				// printf("***** Invalid memory read (non-readable) at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(uc->current_cpu);
+				return 0;
+			}
+		}
+
+		/* Adjust the given return address.  */
+		retaddr -= GETPC_ADJ;
+
+		/* If the TLB entry is for a different page, reload and try again.  */
+		/* If the TLB entry addend is invalidated by any callbacks (perhaps due to
+		   a TLB flush), reload and try again.  */
+		if ((addr & TARGET_PAGE_MASK)
+			!= (tlb_addr & (TARGET_PAGE_MASK | TLB_INVALID_MASK))
+			|| env->tlb_table[mmu_idx][index].addend == -1) {
+#ifdef ALIGNED_ONLY
+			if ((addr & (DATA_SIZE - 1)) != 0) {
+				//cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
+				//                     mmu_idx, retaddr);
+				env->invalid_addr = addr;
+#if defined(SOFTMMU_CODE_ACCESS)
+				env->invalid_error = UC_ERR_FETCH_UNALIGNED;
 #else
-        res = glue(glue(ld, LSUFFIX), _le_p)((uint8_t*)haddr);
+				env->invalid_error = UC_ERR_READ_UNALIGNED;
 #endif
-    }
+				cpu_exit(uc->current_cpu);
+				return 0;
+			}
+#endif
+			if (!victim_tlb_hit_read(env, addr, mmu_idx, index)) {
+				tlb_fill(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
+					mmu_idx, retaddr);
+			}
+			tlb_addr = env->tlb_table[mmu_idx][index].ADDR_READ;
+		}
 
-_out:
-    // Unicorn: callback on successful read
-    if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
-        if (!uc->size_recur_mem) { // disabling read callback if in recursive call
-            HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_AFTER) {
-              if (hook->to_delete)
-                  continue;
-              if (!HOOK_BOUND_CHECK(hook, addr))
-                    continue;
-                ((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ_AFTER, addr, DATA_SIZE, res, hook->user_data);
-            }
-        }
-    }
+		/* Handle an IO access.  */
+		if (unlikely(tlb_addr & ~TARGET_PAGE_MASK)) {
+			hwaddr ioaddr;
+			if ((addr & (DATA_SIZE - 1)) != 0) {
+				goto do_unaligned_access;
+			}
+			ioaddr = env->iotlb[mmu_idx][index];
+			if (ioaddr == 0) {
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_READ_UNMAPPED;
+				// printf("Invalid memory read at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(env->uc->current_cpu);
+				return 0;
+			}
+			else {
+				env->invalid_error = UC_ERR_OK;
+			}
 
-    return res;
+			/* ??? Note that the io helpers always read data in the target
+			   byte ordering.  We should push the LE/BE request down into io.  */
+			res = glue(io_read, SUFFIX)(env, ioaddr, addr, retaddr);
+			res = TGT_LE(res);
+			goto _out;
+		}
+
+		/* Handle slow unaligned access (it spans two pages or IO).  */
+		if (DATA_SIZE > 1
+			&& unlikely((addr & ~TARGET_PAGE_MASK) + DATA_SIZE - 1
+				>= TARGET_PAGE_SIZE)) {
+			target_ulong addr1, addr2;
+			DATA_TYPE res1, res2;
+			unsigned shift;
+		do_unaligned_access:
+#ifdef ALIGNED_ONLY
+			//cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
+			//                     mmu_idx, retaddr);
+			env->invalid_addr = addr;
+#if defined(SOFTMMU_CODE_ACCESS)
+			env->invalid_error = UC_ERR_FETCH_UNALIGNED;
+#else
+			env->invalid_error = UC_ERR_READ_UNALIGNED;
+#endif
+			cpu_exit(uc->current_cpu);
+			return 0;
+#endif
+			addr1 = addr & ~(DATA_SIZE - 1);
+			addr2 = addr1 + DATA_SIZE;
+			/* Note the adjustment at the beginning of the function.
+			   Undo that for the recursion.  */
+			uc->size_recur_mem = DATA_SIZE - (addr - addr1); // size already treated by callback
+			res1 = helper_le_ld_name(env, addr1, mmu_idx, retaddr + GETPC_ADJ);
+			uc->size_recur_mem = (addr2 - addr);
+			res2 = helper_le_ld_name(env, addr2, mmu_idx, retaddr + GETPC_ADJ);
+			uc->size_recur_mem = 0;
+			shift = (addr & (DATA_SIZE - 1)) * 8;
+
+			/* Little-endian combine.  */
+			res = (res1 >> shift) | (res2 << ((DATA_SIZE * 8) - shift));
+			goto _out;
+		}
+
+		/* Handle aligned access or unaligned access in the same page.  */
+#ifdef ALIGNED_ONLY
+		if ((addr & (DATA_SIZE - 1)) != 0) {
+			//cpu_unaligned_access(ENV_GET_CPU(env), addr, READ_ACCESS_TYPE,
+			//                     mmu_idx, retaddr);
+			env->invalid_addr = addr;
+#if defined(SOFTMMU_CODE_ACCESS)
+			env->invalid_error = UC_ERR_FETCH_UNALIGNED;
+#else
+			env->invalid_error = UC_ERR_READ_UNALIGNED;
+#endif
+			cpu_exit(uc->current_cpu);
+			return 0;
+		}
+#endif
+
+
+		haddr = (uintptr_t)(addr + env->tlb_table[mmu_idx][index].addend);
+#if DATA_SIZE == 1
+		res = glue(glue(ld, LSUFFIX), _p)((uint8_t*)haddr);
+#else
+		res = glue(glue(ld, LSUFFIX), _le_p)((uint8_t*)haddr);
+#endif
+
+	_out:
+		// Unicorn: callback on successful read
+		if (READ_ACCESS_TYPE == MMU_DATA_LOAD) {
+			if (!uc->size_recur_mem) { // disabling read callback if in recursive call
+				HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ_AFTER) {
+					if (hook->to_delete)
+						continue;
+					if (!HOOK_BOUND_CHECK(hook, addr))
+						continue;
+					((uc_cb_hookmem_t)hook->callback)(env->uc, UC_MEM_READ_AFTER, addr, DATA_SIZE, res, hook->user_data);
+				}
+			}
+		}
+	}
+
+	return res;
 }
 
 #if DATA_SIZE > 1

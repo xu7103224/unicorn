@@ -318,6 +318,21 @@ typedef void (*uc_cb_hookmem_t)(uc_engine *uc, uc_mem_type type,
 typedef bool (*uc_cb_eventmem_t)(uc_engine *uc, uc_mem_type type,
         uint64_t address, int size, int64_t value, void *user_data);
 
+
+/*
+  Callback function for operating memory events.
+  param:
+  @type: this memory is being READ, or WRITE
+  @address: address where the code is being executed
+  @size: size of data being read or written
+  @value: address of return data. type = READ.
+  @user_data: user data passed to tracing APIs
+
+  return :jump this operation if return true, otherwise to continue execution.
+*/
+typedef bool (*uc_cb_mem_operating_t)(uc_engine* uc, uc_mem_type type,
+    uint64_t address, int size, void* value, void* user_data);
+
 /*
   Memory region mapped by uc_mem_map() and uc_mem_map_ptr()
   Retrieve the list of memory regions with uc_mem_regions()
