@@ -89,7 +89,7 @@ config.log
 *.sln.docstates
 
 # Build results
-
+Win32
 [Dd]ebug/
 [Rr]elease/
 x64/
