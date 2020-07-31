@@ -3,6 +3,9 @@
 
 /* Sample code to demonstrate how to emulate X86 code */
 
+#include <capstone/platform.h>
+#include <capstone/capstone.h>
+
 #include <unicorn/unicorn.h>
 #include <string.h>
 
@@ -1078,13 +1081,44 @@ int main(int argc, char** argv, char** envp)
 }
 #endif
 
+
+
 //0193DE53     8B00                 MOV EAX, DWORD PTR DS : [EAX]
 //0193DE55     05 00100000          ADD EAX, 1000
 //0193DE5A     0305 FFFFFFFF        ADD EAX, DWORD PTR DS : [FFFFFFFF]
 
-#define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\x03\x05\xFF\xFF\xFF\xFF"
-#define TEST_HOOK_CODE_SIZE 7
+#define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\xE8\x01\x01\x02\x02\x03\x05\xFF\xFF\xFF\xFF"
+#define TEST_HOOK_CODE_SIZE sizeof(TEST_HOOK_CODE)
 
+static csh handle;
+
+bool initCS() {
+    cs_err err = cs_open(CS_ARCH_X86, CS_MODE_32, &handle);
+    if (err)
+        return false;
+    cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+    return true;
+}
+
+int disasm(uint8_t *code, size_t size, cs_insn** insn) {
+    uint64_t address = 0x1000;
+    return cs_disasm(handle, code, size, address, 0, insn);
+}
+
+// callback for tracing instruction
+static void hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user_data)
+{
+    uint8_t instr_bytes[100] = { 0 };
+    uc_mem_read(uc, address, instr_bytes, size);
+    cs_insn* insn;
+    size_t count;
+    count = disasm(instr_bytes, size, &insn);
+
+    printf("0x%" PRIx64 ":\t%s\t%s\n", insn[0].address, insn[0].mnemonic, insn[0].op_str);
+
+    cs_free(insn, count);
+}
 
 bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 	uint64_t address, int size, int64_t value, void* user_data)
@@ -1173,6 +1207,11 @@ static void test_i386hook(void)
 	uint32_t tmp;
 	uc_hook trace1, trace2;
 
+    if (!initCS()) {
+        printf("Failed on initCS() with error returned: %u\n", 0);
+        return;
+    }
+
 	//int r_eax = BUFF_ADDRESS;     // EAX register
     int r_eax = (int)testReadDest;     // EAX register
 
@@ -1205,7 +1244,7 @@ static void test_i386hook(void)
 
 	uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
 
-	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code, NULL, 1, 0);
+	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code2, NULL, 1, 0);
 
 	err = uc_emu_start(uc, ADDRESS, ADDRESS + sizeof(X86_CODE32) - 1, 0, 0);
 	if (err) {
