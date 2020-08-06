@@ -1101,9 +1101,13 @@ bool initCS() {
     return true;
 }
 
-int disasm(uint8_t *code, size_t size, cs_insn** insn) {
-    uint64_t address = 0x1000;
+int disasm(uint8_t *code, size_t size, uint64_t address, cs_insn** insn) {
     return cs_disasm(handle, code, size, address, 0, insn);
+}
+
+uint64_t getStack(uc_engine* uc, uint8_t buffer, size_t buffer_size) {
+
+
 }
 
 // callback for tracing instruction
@@ -1113,7 +1117,7 @@ static void hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* use
     uc_mem_read(uc, address, instr_bytes, size);
     cs_insn* insn;
     size_t count;
-    count = disasm(instr_bytes, size, &insn);
+    count = disasm(instr_bytes, size, address, &insn);
 
     printf("0x%" PRIx64 ":\t%s\t%s\n", insn[0].address, insn[0].mnemonic, insn[0].op_str);
 
