@@ -7,7 +7,7 @@
 #include <capstone/capstone.h>
 
 #include <unicorn/unicorn.h>
-#include "unicorn_test.h"
+// #include "unicorn_test.h"
 #include <string.h>
 
 
@@ -1090,7 +1090,8 @@ int main(int argc, char** argv, char** envp)
 
 #define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\xE8\x01\x01\x02\x02\x03\x05\xFF\xFF\xFF\xFF"
 #define TEST_HOOK_CODE_SIZE sizeof(TEST_HOOK_CODE)
-#define REG     uint32_t
+#define REG						uint32_t
+#define NAKED					__declspec(naked)
 
 static csh handle;
 
@@ -1118,8 +1119,7 @@ int disasm(uint8_t *code, size_t size, uint64_t address, cs_insn** insn) {
 //
 //4个系统地址寄存器：GDTR、IDTR、LDTR、TR
 
-struct X86RegInfo {
-    
+typedef struct  {
     REG eax;
     REG ebx;
     REG ecx;
@@ -1128,15 +1128,42 @@ struct X86RegInfo {
     REG edi;
     REG esp;
     REG ebp;
-};
+}X86RegInfo;
 
-void agent(uint8_t* pstack, void* address) {
+
+int foo(int a, int b) {
+	return a + b;
+}
+
+void example(int *ret, int a, int b) {
+	*ret = foo(a, b);
+}
+
+
+void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* before, X86RegInfo* after) {
 
     __asm {
         pushad
-        eax
+        mov eax, before.eax
+		mov ebx, before.ebx
+		mov ecx, before.ecx
+		mov edx, before.edx
+		mov esi, before.esi
+		mov edi, before.edi
+		mov esp, before.esp
+		mov ebp, before.ebp
+		call address
+		mov after.eax, eax
+		mov after.ebx, ebx
+		mov after.ecx, ecx
+		mov after.edx, edx
+		mov after.esi, esi
+		mov after.edi, edi
+		mov after.esp, esp
+		mov after.ebp, ebp
         popad
     }
+
 }
 
 uint64_t getStack(uc_engine* uc, uint8_t buffer, size_t buffer_size) {
@@ -1147,6 +1174,7 @@ uint64_t getStack(uc_engine* uc, uint8_t buffer, size_t buffer_size) {
 // callback for tracing instruction
 static void hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user_data)
 {
+	
     uint8_t instr_bytes[100] = { 0 };
     uc_mem_read(uc, address, instr_bytes, size);
     cs_insn* insn;
@@ -1300,14 +1328,26 @@ static void test_i386hook(void)
 	uc_close(uc);
 }
 
+void testHook() {
 
+	int a = 10;
+	int b = 33;
+	int c = 0;
 
+	example(c, a, b);
+}
+void initHook() {
+	uint8_t* func_entry = example;
+
+}
 // EXTERN_C ULONG64 myAdd(ULONG64 u1, ULONG64 u2);
-
 int main(int argc, char** argv, char** envp)
 {
+
     //int a = myAdd(10, 20);
 	//test_i386_invalid_mem_write();
+	testHook();
 	test_i386hook();
+
 	return 0;
 }
