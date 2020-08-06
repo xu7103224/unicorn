@@ -7,6 +7,7 @@
 #include <capstone/capstone.h>
 
 #include <unicorn/unicorn.h>
+#include "unicorn_test.h"
 #include <string.h>
 
 
@@ -1089,6 +1090,7 @@ int main(int argc, char** argv, char** envp)
 
 #define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\xE8\x01\x01\x02\x02\x03\x05\xFF\xFF\xFF\xFF"
 #define TEST_HOOK_CODE_SIZE sizeof(TEST_HOOK_CODE)
+#define REG     uint32_t
 
 static csh handle;
 
@@ -1103,6 +1105,38 @@ bool initCS() {
 
 int disasm(uint8_t *code, size_t size, uint64_t address, cs_insn** insn) {
     return cs_disasm(handle, code, size, address, 0, insn);
+}
+//8个通用寄存器：EAX、EBX、ECX、EDX、ESI、EDI、ESP、EBP
+//
+//1个标志寄存器：EFLAGS
+//
+//6个段寄存器：CS、DS、ES、FS、GS、SS
+//
+//5个控制寄存器：CR0、CR1、CR2、CR3、CR4
+//
+//8个调试寄存器：DR0、DR1、DR2、DR3、DR4、DR5、DR6、DR7
+//
+//4个系统地址寄存器：GDTR、IDTR、LDTR、TR
+
+struct X86RegInfo {
+    
+    REG eax;
+    REG ebx;
+    REG ecx;
+    REG edx;
+    REG esi;
+    REG edi;
+    REG esp;
+    REG ebp;
+};
+
+void agent(uint8_t* pstack, void* address) {
+
+    __asm {
+        pushad
+        eax
+        popad
+    }
 }
 
 uint64_t getStack(uc_engine* uc, uint8_t buffer, size_t buffer_size) {
@@ -1123,6 +1157,7 @@ static void hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* use
 
     cs_free(insn, count);
 }
+
 
 bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 	uint64_t address, int size, int64_t value, void* user_data)
@@ -1204,6 +1239,10 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 
 char* testReadDest = "\x06\x03\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
+void test() {
+
+}
+
 static void test_i386hook(void)
 {
 	uc_engine* uc;
@@ -1263,8 +1302,11 @@ static void test_i386hook(void)
 
 
 
+// EXTERN_C ULONG64 myAdd(ULONG64 u1, ULONG64 u2);
+
 int main(int argc, char** argv, char** envp)
 {
+    //int a = myAdd(10, 20);
 	//test_i386_invalid_mem_write();
 	test_i386hook();
 	return 0;
