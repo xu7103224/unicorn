@@ -9,6 +9,7 @@
 #include <unicorn/unicorn.h>
 // #include "unicorn_test.h"
 #include <string.h>
+#include <Windows.h>
 
 
 // code to be emulated
@@ -1089,24 +1090,142 @@ int main(int argc, char** argv, char** envp)
 //0193DE5A     0305 FFFFFFFF        ADD EAX, DWORD PTR DS : [FFFFFFFF]
 
 #define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\xE8\x01\x01\x02\x02\x03\x05\xFF\xFF\xFF\xFF"
-#define TEST_HOOK_CODE_SIZE sizeof(TEST_HOOK_CODE)
+#define TEST_HOOK_CODE_SIZE     sizeof(TEST_HOOK_CODE)
 #define REG						uint32_t
 #define NAKED					__declspec(naked)
-
+#define address_t               uint32_t
+#define GetJumpOffset(src, dest, cmdsize)   ((src)-(dest)-(cmdsize))
 static csh handle;
+static uint8_t* g_hook_code[1024];
+static uint8_t* g_hook_code_size = 1024;
+
+//hook code...
+//PUSH ID
+//JUMP HANDLE STUB
+
+//handle stub...
+//PUSH ID
+//JUMP 
+
+#pragma pack(push)
+#pragma pack(1)
+//0073DE53 > $ E9 18B2D100    JMP sample_a.01459070
+//0073DE58     68 AAAAAAAA    PUSH AAAAAAAA
+typedef struct {
+    uint8_t cmd;    //0xE9
+    address_t offset;
+    //uint8_t cmd;    //0x68
+    //address_t id;
+} FixContent;
+#pragma pack(pop)
+
+#define MIN_HOOK_FIX_SIZE               5
+#define STUB_SIZE                       0x20
+#define SPRING_BOARD_SIZE               0x20
+
+typedef struct {
+    REG eax;
+    REG ebx;
+    REG ecx;
+    REG edx;
+    REG esi;
+    REG edi;
+    REG esp;
+    REG ebp;
+}X86RegInfo;
+
+typedef struct {
+    uint32_t id;
+    uint8_t stub[STUB_SIZE];
+    uint8_t springboard[SPRING_BOARD_SIZE];
+    FixContent fix;
+    size_t fixSize;
+    uint8_t* fn;
+    uint8_t* fake;
+} HookInfo;
+
+HookInfo gHookInfo[100];
 
 bool initCS() {
     cs_err err = cs_open(CS_ARCH_X86, CS_MODE_32, &handle);
+
     if (err)
         return false;
+
     cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
 
     return true;
 }
 
-int disasm(uint8_t *code, size_t size, uint64_t address, cs_insn** insn) {
+int disasm(uint8_t* code, size_t size, uint64_t address, cs_insn** insn) {
     return cs_disasm(handle, code, size, address, 0, insn);
 }
+
+bool genStub(uint8_t *stub, size_t stubSizeOfByte, uint8_t *address, cs_insn* insn, size_t insnNum) {
+    uint8_t* p = address;
+    uint8_t* p1 = stub;
+    for (int i = 0; i < insnNum; ++i) {
+        if (*p >= 0xE0 && *p <= 0xE9 || *p >= 0x70 && *p <= 0x79) {
+            return false;
+        }
+        memcpy(p1, p, insn[i].size);
+        p += insn[i].size;
+        p1 += insn[i].size;
+    }
+
+    return true;
+}
+
+void genSpringBoard(uint8_t* base, uint32_t id, uint8_t* address) {
+    
+    int pos = 0;
+    base[pos] = 0x68; pos++;
+    *(uint32_t*)&base[pos] = id; pos += 4;
+    base[pos] = 0xE9; pos++;
+    *(uint32_t*)&base[pos] = address; pos += 4;
+    uint32_t size = 0;
+    VirtualProtect(base, pos, PAGE_EXECUTE_READWRITE, &size);
+}
+
+bool copyCode(uint8_t* begin, uint8_t* buffer, size_t size) {
+    uint8_t* src = begin;
+    uint8_t* dest = begin;
+    int i = 0;
+    for (; src[i] != 0xCC; ++i) {
+        if (i >= size) {
+            return false;
+        }
+        dest[i] = src[i];
+    }
+
+    return true;
+}
+
+bool makeHook(void *fn, void *fakefn, HookInfo *hookinfo) {
+    hookinfo->fn = fn;
+    hookinfo->fake = fakefn;
+    hookinfo->id = 10;
+    cs_insn* insn;
+    size_t count = disasm(fn, 0x20, fn, &insn);
+    size_t fixSize = 0;
+    for (int i = 0; i < count; ++i) {
+        fixSize += insn[0].size;
+        if (fixSize >= MIN_HOOK_FIX_SIZE) {
+            break;
+        }
+    }
+    if (fixSize >= MIN_HOOK_FIX_SIZE) {
+        genStub(hookinfo->stub, STUB_SIZE, fn, insn, fixSize);
+        genSpringBoard(hookinfo->springboard, SPRING_BOARD_SIZE, hookinfo->id);
+
+
+    }
+    
+    cs_free(insn, count);
+}
+
+
+
 //8个通用寄存器：EAX、EBX、ECX、EDX、ESI、EDI、ESP、EBP
 //
 //1个标志寄存器：EFLAGS
@@ -1119,17 +1238,6 @@ int disasm(uint8_t *code, size_t size, uint64_t address, cs_insn** insn) {
 //
 //4个系统地址寄存器：GDTR、IDTR、LDTR、TR
 
-typedef struct  {
-    REG eax;
-    REG ebx;
-    REG ecx;
-    REG edx;
-    REG esi;
-    REG edi;
-    REG esp;
-    REG ebp;
-}X86RegInfo;
-
 
 int foo(int a, int b) {
 	return a + b;
@@ -1139,7 +1247,9 @@ void example(int *ret, int a, int b) {
 	*ret = foo(a, b);
 }
 
+void saveContext(REG eax, REG ebx, REG ecx, REG edx, REG esi, REG edi, REG esp, REG ebp) {
 
+}
 void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* before, X86RegInfo* after) {
 
     __asm {
@@ -1163,12 +1273,12 @@ void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* befo
 		mov after.ebp, ebp
         popad
     }
-
 }
 
-uint64_t getStack(uc_engine* uc, uint8_t buffer, size_t buffer_size) {
-
-
+void initHook() {
+    memset(g_hook_code, 0x0, g_hook_code_size);
+    copyCode(example, g_hook_code, g_hook_code_size);
+    uint8_t* func_entry = example;
 }
 
 // callback for tracing instruction
@@ -1329,17 +1439,14 @@ static void test_i386hook(void)
 }
 
 void testHook() {
-
+    initHook();
 	int a = 10;
 	int b = 33;
 	int c = 0;
 
 	example(c, a, b);
 }
-void initHook() {
-	uint8_t* func_entry = example;
 
-}
 // EXTERN_C ULONG64 myAdd(ULONG64 u1, ULONG64 u2);
 int main(int argc, char** argv, char** envp)
 {
