@@ -177,6 +177,15 @@ typedef enum uc_err {
 typedef void (*uc_cb_hookcode_t)(uc_engine *uc, uint64_t address, uint32_t size, void *user_data);
 
 /*
+  Callback function for tracing code (UC_HOOK_JUMP_EXCEPTION)
+
+  @address: address where the code is being executed
+  @size: size of machine instruction(s) being executed, or 0 when size is unknown
+  @user_data: user data passed to tracing APIs.
+*/
+typedef int (*uc_cb_hookjumpexception_t)(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
+
+/*
   Callback function for tracing interrupts (for uc_hook_intr())
 
   @intno: interrupt number
@@ -224,6 +233,7 @@ typedef enum uc_mem_type {
     UC_MEM_FETCH_PROT,  // Fetch from non-executable, but mapped, memory
     UC_MEM_READ_AFTER,   // Memory is read from (successful access)
     UC_MEM_READING,   // Memory is reading now
+	UC_MEM_WRITING,   // Memory is writing now
 } uc_mem_type;
 
 // All type of hooks for uc_hook_add() API.
@@ -260,7 +270,10 @@ typedef enum uc_hook_type {
     // Hook invalid instructions exceptions.
     UC_HOOK_INSN_INVALID = 1 << 14,
     // Hook memory reading events
-    UC_HOOK_MEM_READING = 1 << 15,
+	UC_HOOK_MEM_READING_AND_WRITING = 1 << 15,
+	// Hook jump exception events
+	UC_HOOK_MEM_JUMP_EXCEPTION = 1 << 16,
+	
 } uc_hook_type;
 
 // Hook type for all events of unmapped memory access

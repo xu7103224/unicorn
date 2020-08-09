@@ -1098,7 +1098,7 @@ int main(int argc, char** argv, char** envp)
 static csh handle;
 static uint8_t* g_hook_code[1024];
 static uint8_t* g_hook_code_size = 1024;
-
+#define HOOKINFO_ID					10
 //hook code...
 //PUSH ID
 //JUMP HANDLE STUB
@@ -1138,13 +1138,20 @@ typedef struct {
     uint32_t id;
     uint8_t stub[STUB_SIZE];
     uint8_t springboard[SPRING_BOARD_SIZE];
+	uint8_t enterVM[SPRING_BOARD_SIZE];
     FixContent fix;
     size_t fixSize;
     uint8_t* fn;
+	uint32_t fnrange;
     uint8_t* fake;
+	X86RegInfo regs;
 } HookInfo;
 
-HookInfo gHookInfo[100];
+HookInfo g_HookInfo[100] = {0};
+
+uint8_t *getDebugFunctionAddress(uint8_t* fn) {
+	return *((uint32_t*)(fn + 1)) + fn + 5;
+}
 
 bool initCS() {
     cs_err err = cs_open(CS_ARCH_X86, CS_MODE_32, &handle);
@@ -1164,10 +1171,14 @@ int disasm(uint8_t* code, size_t size, uint64_t address, cs_insn** insn) {
 bool genStub(uint8_t *stub, size_t stubSizeOfByte, uint8_t *address, cs_insn* insn, size_t insnNum) {
     uint8_t* p = address;
     uint8_t* p1 = stub;
+	uint32_t oldp;
+	VirtualProtect(stub, stubSizeOfByte, PAGE_EXECUTE_READWRITE, &oldp);
     for (int i = 0; i < insnNum; ++i) {
+
         if (*p >= 0xE0 && *p <= 0xE9 || *p >= 0x70 && *p <= 0x79) {
             return false;
         }
+
         memcpy(p1, p, insn[i].size);
         p += insn[i].size;
         p1 += insn[i].size;
@@ -1177,50 +1188,234 @@ bool genStub(uint8_t *stub, size_t stubSizeOfByte, uint8_t *address, cs_insn* in
 }
 
 void genSpringBoard(uint8_t* base, uint32_t id, uint8_t* address) {
-    
+
+	uint32_t oldp;
+	VirtualProtect(address, SPRING_BOARD_SIZE, PAGE_EXECUTE_READWRITE, &oldp);
     int pos = 0;
     base[pos] = 0x68; pos++;
     *(uint32_t*)&base[pos] = id; pos += 4;
     base[pos] = 0xE9; pos++;
-    *(uint32_t*)&base[pos] = address; pos += 4;
+    *(uint32_t*)&base[pos] = address - (uint8_t*)& base[pos] - 4; pos += 4;
     uint32_t size = 0;
     VirtualProtect(base, pos, PAGE_EXECUTE_READWRITE, &size);
 }
 
-bool copyCode(uint8_t* begin, uint8_t* buffer, size_t size) {
-    uint8_t* src = begin;
-    uint8_t* dest = begin;
-    int i = 0;
-    for (; src[i] != 0xCC; ++i) {
-        if (i >= size) {
-            return false;
-        }
-        dest[i] = src[i];
-    }
+//008EDE5A      55            push    ebp
+//008EDE59      54            push    esp
+//008EDE57      57            push    edi
+//008EDE58      56            push    esi
+//008EDE56      52            push    edx
+//008EDE55      51            push    ecx
+//008EDE54      53            push    ebx
+//008EDE53      50            push    eax
+//008EDE5B      E8 A02171FF   call    00000000
+//008EDE60	  E9 9C2171FF   jmp     00000001
+//008EDE65      90            nop
+//008EDE66      90            nop
 
-    return true;
+
+//void NAKED enterVM() {
+//	__asm {
+//		push ebp
+//		push esp
+//		push edi
+//		push esi
+//		push edx
+//		push ecx
+//		push ebx
+//		push eax
+//		call saveContext
+//		jmp address		//Tail address of the protected chunk 
+//	}
+//}
+
+void genEnterVM(uint8_t* base, uint8_t* saveContextFn, uint8_t* protectedChunkTailAddress) {
+
+	uint32_t oldp;
+	VirtualProtect(base, SPRING_BOARD_SIZE, PAGE_EXECUTE_READWRITE, &oldp);
+
+	int pos = 0;
+	base[pos] = 0x55; pos++;
+	base[pos] = 0x54; pos++;
+	base[pos] = 0x57; pos++;
+	base[pos] = 0x56; pos++;
+	base[pos] = 0x52; pos++;
+	base[pos] = 0x51; pos++;
+	base[pos] = 0x53; pos++;
+	base[pos] = 0x50; pos++;
+	base[pos] = 0xE8; pos++;
+	*(uint32_t*)& base[pos] = saveContextFn - &base[pos] - 4; pos += 4;
+	base[pos] = 0xE9; pos++;
+	*(uint32_t*)& base[pos] = protectedChunkTailAddress - &base[pos] - 4; pos += 4;
+	base[pos] = 0x90; pos++;
+
 }
 
-bool makeHook(void *fn, void *fakefn, HookInfo *hookinfo) {
+
+size_t copyCode(uint8_t* begin, uint8_t* buffer, size_t size) {
+    uint8_t* src = begin;
+    uint8_t* dest = buffer;
+	int pos = 0;
+
+	cs_insn* insn;
+	size_t count;
+	count = disasm(begin, 1024, begin, &insn);
+	for (int i = 0; i < count; ++i) {
+		if (insn[i].bytes[0] == 0xCC) {
+			break;
+		}
+		memcpy(&dest[pos], insn[i].bytes, insn[i].size);
+		pos += insn[i].size;
+	}
+
+    return pos;
+}
+
+
+static int hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
+
+
+
+
+bool mem_read_operation_invalid2(uc_engine* uc, uc_mem_type type,
+	uint64_t address, int size, int64_t value, void* user_data)
+{
+	int r_eax;     // EAX register
+	int r_ip;
+
+	switch (type) {
+	case UC_MEM_READING:
+	{
+		void* returnData = (void*)value;
+		memcpy(returnData, address, size);
+		return true;
+	}break;
+	case UC_MEM_WRITING:
+	{
+		memcpy(address, &value, size);
+		return true;
+	}break;
+
+
+	}
+	return false;
+}
+
+void startVM(HookInfo* hookInfo, uint8_t* code, size_t length)
+{
+	uc_engine* uc;
+	uc_err err;
+	uint32_t tmp;
+	uc_hook trace1, trace2;
+
+	err = uc_open(UC_ARCH_X86, UC_MODE_32, &uc);
+	if (err) {
+		printf("Failed on open() with error returned: %u\n", err);
+		return;
+	}
+	uint32_t mask = -1;
+	mask = mask ^ 0xFFF;
+	uint32_t membase = (uint32_t)hookInfo->fn & mask;
+	uc_mem_map(uc, membase, 2 * 1024 * 1024, UC_PROT_ALL);
+	if (uc_mem_write(uc, hookInfo->fn, code, length)) {
+		printf("Failed to write code to memory, quit!\n");
+		return;
+	}
+	uint8_t instr_bytes[0x100] = { 0 };
+	if (uc_mem_read(uc, hookInfo->fn, instr_bytes, length)) {
+		printf("Failed to write code to memory, quit!\n");
+		return;
+	}
+	
+	uc_reg_write(uc, UC_X86_REG_EAX, &hookInfo->regs.eax);
+	uc_reg_write(uc, UC_X86_REG_EBX, &hookInfo->regs.ebx);
+	uc_reg_write(uc, UC_X86_REG_ECX, &hookInfo->regs.ecx);
+	uc_reg_write(uc, UC_X86_REG_EDX, &hookInfo->regs.edx);
+	uc_reg_write(uc, UC_X86_REG_ESI, &hookInfo->regs.esi);
+	uc_reg_write(uc, UC_X86_REG_EDI, &hookInfo->regs.edi);
+	uc_reg_write(uc, UC_X86_REG_ESP, &hookInfo->regs.esp);
+	uc_reg_write(uc, UC_X86_REG_EBP, &hookInfo->regs.ebp);
+
+	printf("register{\n"
+		"eax:0x%08x \n"
+		"ebx:0x%08x \n"
+		"ecx:0x%08x \n"
+		"edx:0x%08x \n"
+		"esi:0x%08x \n"
+		"edi:0x%08x \n"
+		"esp:0x%08x \n"
+		"ebp:0x%08x \n"
+		"}", hookInfo->regs.eax, hookInfo->regs.ebx, hookInfo->regs.ecx, hookInfo->regs.edx, hookInfo->regs.esi, hookInfo->regs.edi, hookInfo->regs.esp, hookInfo->regs.ebp);
+
+
+
+	//uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED |
+	//	UC_HOOK_MEM_READ_PROT | UC_HOOK_MEM_WRITE_PROT | UC_HOOK_MEM_FETCH_PROT |
+	//	UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH | UC_HOOK_MEM_READING
+	//	, mem_read_operation_invalid, NULL, 1, 0);
+
+	uc_hook_add(uc, &trace1, UC_HOOK_MEM_READING_AND_WRITING
+		, mem_read_operation_invalid2, NULL, 1, 0);
+
+	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code2, NULL, 1, 0);
+
+	err = uc_emu_start(uc, hookInfo->fn, hookInfo->fn + length - 1, 0, 0);
+	if (err) {
+		printf("Failed on uc_emu_start() with error returned %u: %s\n",
+			err, uc_strerror(err));
+	}
+
+	uc_close(uc);
+}
+
+void __stdcall saveContext(REG eax, REG ebx, REG ecx, REG edx, REG esi, REG edi, REG esp, REG ebp, uint32_t id) {
+	HookInfo* hi = &g_HookInfo[id];
+	hi->regs.eax = eax;
+	hi->regs.ebx = ebx;
+	hi->regs.ecx = ecx;
+	hi->regs.edx = edx;
+	hi->regs.esi = esi;
+	hi->regs.edi = edi;
+	hi->regs.esp = esp;
+	hi->regs.esp = ebp;
+	
+	startVM(hi, g_hook_code, hi->fnrange);
+}
+
+bool makeHook(uint8_t *fn, size_t protectedRange, void *fakefn, HookInfo *hookinfo,size_t codeChunksize) {
     hookinfo->fn = fn;
     hookinfo->fake = fakefn;
-    hookinfo->id = 10;
+    hookinfo->id = HOOKINFO_ID;
+	hookinfo->fnrange = codeChunksize;
     cs_insn* insn;
     size_t count = disasm(fn, 0x20, fn, &insn);
     size_t fixSize = 0;
-    for (int i = 0; i < count; ++i) {
-        fixSize += insn[0].size;
+	int i = 0;
+    for (; i < count; ++i) {
+        fixSize += insn[i].size;
         if (fixSize >= MIN_HOOK_FIX_SIZE) {
+			i++;
             break;
         }
     }
+
     if (fixSize >= MIN_HOOK_FIX_SIZE) {
-        genStub(hookinfo->stub, STUB_SIZE, fn, insn, fixSize);
-        genSpringBoard(hookinfo->springboard, SPRING_BOARD_SIZE, hookinfo->id);
-
-
+        genStub(hookinfo->stub, STUB_SIZE, fn, insn, i);
+        genSpringBoard(hookinfo->springboard, hookinfo->id, hookinfo->enterVM);
+		genEnterVM(hookinfo->enterVM, getDebugFunctionAddress(saveContext), (uint32_t)fn+protectedRange);
     }
     
+	//install hook
+	uint32_t oldp;
+	VirtualProtect(fn, codeChunksize, PAGE_EXECUTE_READWRITE, &oldp);
+	memset(fn, 0x90, codeChunksize);
+	int pos = 0;
+	fn[pos] = 0xE9; pos++;
+	*(uint32_t*)& fn[pos] = (uint32_t)hookinfo->springboard - (uint32_t)& fn[pos] - 4;
+	VirtualProtect(fn, codeChunksize, oldp, &oldp);
+
+	
+
     cs_free(insn, count);
 }
 
@@ -1247,11 +1442,9 @@ void example(int *ret, int a, int b) {
 	*ret = foo(a, b);
 }
 
-void saveContext(REG eax, REG ebx, REG ecx, REG edx, REG esi, REG edi, REG esp, REG ebp) {
 
-}
-void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* before, X86RegInfo* after) {
-
+void agent(void* fn, X86RegInfo* before, X86RegInfo* after) {
+	//该函数不能有参数，必须从内存中把参数些为立即数
     __asm {
         pushad
         mov eax, before.eax
@@ -1262,7 +1455,7 @@ void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* befo
 		mov edi, before.edi
 		mov esp, before.esp
 		mov ebp, before.ebp
-		call address
+		call fn
 		mov after.eax, eax
 		mov after.ebx, ebx
 		mov after.ecx, ecx
@@ -1275,27 +1468,82 @@ void agent(uint8_t * pstack, uint32_t stacksize, void* address, X86RegInfo* befo
     }
 }
 
+void testHook();
 void initHook() {
     memset(g_hook_code, 0x0, g_hook_code_size);
-    copyCode(example, g_hook_code, g_hook_code_size);
-    uint8_t* func_entry = example;
+	//uint32_t offset = (*((uint32_t*)(((uint8_t*)example) + 1)));
+	//void* fn = offset + (uint32_t)example + 5;
+	uint8_t* fn = getDebugFunctionAddress(example);
+	//void* fn = example;
+    size_t protectedSize = copyCode(fn, g_hook_code, g_hook_code_size);
+	HookInfo* hi = &g_HookInfo[HOOKINFO_ID];
+	makeHook(fn, protectedSize, 0, hi, protectedSize);
+    uint8_t* func_entry = fn;
 }
 
+bool inRange(uint32_t val, uint32_t begin, uint32_t end) {
+	return val >= begin && val <= end;
+}
 // callback for tracing instruction
-static void hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user_data)
+static int hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user_data)
 {
-	
+	static uint32_t oldeip = 0;
+	static cs_insn oldinsn = {0};
+	static 
+	HookInfo* hi = &g_HookInfo[HOOKINFO_ID];
     uint8_t instr_bytes[100] = { 0 };
     uc_mem_read(uc, address, instr_bytes, size);
-    cs_insn* insn;
-    size_t count;
-    count = disasm(instr_bytes, size, address, &insn);
+	cs_insn* insn = NULL;
+    size_t count = 0;
 
-    printf("0x%" PRIx64 ":\t%s\t%s\n", insn[0].address, insn[0].mnemonic, insn[0].op_str);
+	if (size) {
+		count = disasm(instr_bytes, size, address, &insn);
+		printf("0x%" PRIx64 ":\t%s\t%s\n", insn[0].address, insn[0].mnemonic, insn[0].op_str);
+	}
+	else {
+		printf("0x% jump exception", address);
+	}
 
-    cs_free(insn, count);
+			
+	if (oldinsn.bytes[0] == 0xE8 || size == 0) {
+		if (!inRange(address, hi->fn, hi->fn + hi->fnrange)) {
+			X86RegInfo before, after;
+			uc_reg_read(uc, UC_X86_REG_EAX, &before.eax);
+			uc_reg_read(uc, UC_X86_REG_EBX, &before.ebx);
+			uc_reg_read(uc, UC_X86_REG_ECX, &before.ecx);
+			uc_reg_read(uc, UC_X86_REG_EDX, &before.edx);
+			uc_reg_read(uc, UC_X86_REG_ESI, &before.esi);
+			uc_reg_read(uc, UC_X86_REG_EDI, &before.edi);
+			uc_reg_read(uc, UC_X86_REG_ESP, &before.esp);
+			uc_reg_read(uc, UC_X86_REG_EBP, &before.ebp);
+
+			agent(address, &before, &after);
+
+			uc_reg_write(uc, UC_X86_REG_EAX, &after.eax);
+			uc_reg_write(uc, UC_X86_REG_EBX, &after.ebx);
+			uc_reg_write(uc, UC_X86_REG_ECX, &after.ecx);
+			uc_reg_write(uc, UC_X86_REG_EDX, &after.edx);
+			uc_reg_write(uc, UC_X86_REG_ESI, &after.esi);
+			uc_reg_write(uc, UC_X86_REG_EDI, &after.edi);
+			uc_reg_write(uc, UC_X86_REG_ESP, &after.esp);
+			uc_reg_write(uc, UC_X86_REG_EBP, &after.ebp);
+
+			oldeip += 5;
+			uc_reg_write(uc, UC_X86_REG_EIP, &oldeip);
+
+			goto Exit;
+		}
+	}
+	uc_reg_read(uc, UC_X86_REG_EIP, &oldeip);
+
+Exit:
+	if (insn) {
+		oldinsn = insn[0];
+		cs_free(insn, count);
+	}
+
+	return 0;
 }
-
 
 bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
 	uint64_t address, int size, int64_t value, void* user_data)
@@ -1307,10 +1555,10 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
         uc_emu_stop(uc);
         return false;
     }
-    if (r_ip >= ADDRESS + TEST_HOOK_CODE_SIZE) {
-        uc_emu_stop(uc);
-        return false;
-    }
+    //if (r_ip >= ADDRESS + TEST_HOOK_CODE_SIZE) {
+    //    uc_emu_stop(uc);
+    //    return false;
+    //}
 	switch (type) {
 	    case UC_MEM_READ:               // Memory is read from
 	    {
@@ -1361,6 +1609,14 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
             printf("UC_MEM_READING HOOK\r\n");
             return true;
         }break;
+		case UC_MEM_WRITING:
+		{
+			void* returnData = (void*)value;
+			memcpy(returnData, address, size);
+			printf("UC_MEM_READING HOOK\r\n");
+			return true;
+		}break;
+
 
 	}
 
@@ -1420,7 +1676,7 @@ static void test_i386hook(void)
 
 	uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED |
         UC_HOOK_MEM_READ_PROT | UC_HOOK_MEM_WRITE_PROT | UC_HOOK_MEM_FETCH_PROT |
-        UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH | UC_HOOK_MEM_READING
+        UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH | UC_HOOK_MEM_READING_AND_WRITING
         , mem_read_operation_invalid, NULL, 1, 0);
 
 	uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
@@ -1439,7 +1695,6 @@ static void test_i386hook(void)
 }
 
 void testHook() {
-    initHook();
 	int a = 10;
 	int b = 33;
 	int c = 0;
@@ -1451,10 +1706,17 @@ void testHook() {
 int main(int argc, char** argv, char** envp)
 {
 
+	if (!initCS()) {
+		printf("Failed on initCS() with error returned: %u\n", 0);
+		return;
+	}
+
     //int a = myAdd(10, 20);
 	//test_i386_invalid_mem_write();
+	initHook();
 	testHook();
-	test_i386hook();
+
+	//test_i386hook();
 
 	return 0;
 }

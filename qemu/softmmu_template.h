@@ -202,7 +202,7 @@ WORD_TYPE helper_le_ld_name(CPUArchState* env, target_ulong addr, int mmu_idx,
 
 	// Unicorn: callback on successful read
 	if (mr == NULL) {
-		HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READING) {
+		HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READING_AND_WRITING) {
 			if (hook->to_delete)
 				continue;
 			handled = ((uc_cb_mem_operating_t)hook->callback)(env->uc, UC_MEM_READING, addr, DATA_SIZE, &res, hook->user_data);
@@ -755,160 +755,181 @@ void helper_le_st_name(CPUArchState *env, target_ulong addr, DATA_TYPE val,
     struct uc_struct *uc = env->uc;
     MemoryRegion *mr = memory_mapping(uc, addr);
 
-    if (!uc->size_recur_mem) { // disabling write callback if in recursive call
-        // Unicorn: callback on memory write
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
-          if (hook->to_delete)
-              continue;
-          if (!HOOK_BOUND_CHECK(hook, addr))
-              continue;
-            ((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, addr, DATA_SIZE, val, hook->user_data);
-        }
-    }
 
-    // Unicorn: callback on invalid memory
-    if (mr == NULL) {
-        handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_UNMAPPED) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_UNMAPPED, addr, DATA_SIZE, val, hook->user_data)))
-                break;
-        }
+#define ENABLE_HOOK_WRITING
+#ifdef ENABLE_HOOK_WRITING
+	handled = false;
 
-        if (!handled) {
-            // save error & quit
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_WRITE_UNMAPPED;
-            // printf("***** Invalid memory write at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(uc->current_cpu);
-            return;
-        } else {
-            env->invalid_error = UC_ERR_OK;
-            mr = memory_mapping(uc, addr);  // FIXME: what if mr is still NULL at this time?
-        }
-    }
+	// Unicorn: callback on successful read
+	if (mr == NULL) {
+		HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READING_AND_WRITING) {
+			if (hook->to_delete)
+				continue;
+			handled = ((uc_cb_mem_operating_t)hook->callback)(env->uc, UC_MEM_WRITING, addr, DATA_SIZE, val, hook->user_data);
+		}
+	}
 
-    // Unicorn: callback on non-writable memory
-    if (mr != NULL && !(mr->perms & UC_PROT_WRITE)) {  //non-writable
-        handled = false;
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT) {
-            if (hook->to_delete)
-                continue;
-            if (!HOOK_BOUND_CHECK(hook, addr))
-                continue;
-            if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_PROT, addr, DATA_SIZE, val, hook->user_data)))
-                break;
-        }
-
-        if (handled) {
-            env->invalid_error = UC_ERR_OK;
-        } else {
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_WRITE_PROT;
-            // printf("***** Invalid memory write (ro) at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(uc->current_cpu);
-            return;
-        }
-    }
-
-    /* Adjust the given return address.  */
-    retaddr -= GETPC_ADJ;
-
-    /* If the TLB entry is for a different page, reload and try again.  */
-    if ((addr & TARGET_PAGE_MASK)
-        != (tlb_addr & (TARGET_PAGE_MASK | TLB_INVALID_MASK))) {
-#ifdef ALIGNED_ONLY
-        if ((addr & (DATA_SIZE - 1)) != 0) {
-            //cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
-            //                     mmu_idx, retaddr);
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_WRITE_UNALIGNED;
-            cpu_exit(uc->current_cpu);
-            return;
-        }
+	if (!handled)
 #endif
-        if (!victim_tlb_hit_write(env, addr, mmu_idx, index)) {
-            tlb_fill(ENV_GET_CPU(env), addr, MMU_DATA_STORE, mmu_idx, retaddr);
-        }
-        tlb_addr = env->tlb_table[mmu_idx][index].addr_write;
-    }
+	{
 
-    /* Handle an IO access.  */
-    if (unlikely(tlb_addr & ~TARGET_PAGE_MASK)) {
-        hwaddr ioaddr;
-        if ((addr & (DATA_SIZE - 1)) != 0) {
-            goto do_unaligned_access;
-        }
-        ioaddr = env->iotlb[mmu_idx][index];
-        if (ioaddr == 0) {
-            env->invalid_addr = addr;
-            env->invalid_error = UC_ERR_WRITE_UNMAPPED;
-            // printf("***** Invalid memory write at " TARGET_FMT_lx "\n", addr);
-            cpu_exit(env->uc->current_cpu);
-            return;
-        }
+		if (!uc->size_recur_mem) { // disabling write callback if in recursive call
+			// Unicorn: callback on memory write
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, addr, DATA_SIZE, val, hook->user_data);
+			}
+		}
 
-        /* ??? Note that the io helpers always read data in the target
-           byte ordering.  We should push the LE/BE request down into io.  */
-        val = TGT_LE(val);
-        glue(io_write, SUFFIX)(env, ioaddr, val, addr, retaddr);
-        return;
-    }
+		// Unicorn: callback on invalid memory
+		if (mr == NULL) {
+			handled = false;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_UNMAPPED) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_UNMAPPED, addr, DATA_SIZE, val, hook->user_data)))
+					break;
+			}
 
-    /* Handle slow unaligned access (it spans two pages or IO).  */
-    if (DATA_SIZE > 1
-        && unlikely((addr & ~TARGET_PAGE_MASK) + DATA_SIZE - 1
-                     >= TARGET_PAGE_SIZE)) {
-        int i;
-    do_unaligned_access:
+			if (!handled) {
+				// save error & quit
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_WRITE_UNMAPPED;
+				// printf("***** Invalid memory write at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(uc->current_cpu);
+				return;
+			}
+			else {
+				env->invalid_error = UC_ERR_OK;
+				mr = memory_mapping(uc, addr);  // FIXME: what if mr is still NULL at this time?
+			}
+		}
+
+		// Unicorn: callback on non-writable memory
+		if (mr != NULL && !(mr->perms & UC_PROT_WRITE)) {  //non-writable
+			handled = false;
+			HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE_PROT) {
+				if (hook->to_delete)
+					continue;
+				if (!HOOK_BOUND_CHECK(hook, addr))
+					continue;
+				if ((handled = ((uc_cb_eventmem_t)hook->callback)(uc, UC_MEM_WRITE_PROT, addr, DATA_SIZE, val, hook->user_data)))
+					break;
+			}
+
+			if (handled) {
+				env->invalid_error = UC_ERR_OK;
+			}
+			else {
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_WRITE_PROT;
+				// printf("***** Invalid memory write (ro) at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(uc->current_cpu);
+				return;
+			}
+		}
+
+		/* Adjust the given return address.  */
+		retaddr -= GETPC_ADJ;
+
+		/* If the TLB entry is for a different page, reload and try again.  */
+		if ((addr & TARGET_PAGE_MASK)
+			!= (tlb_addr & (TARGET_PAGE_MASK | TLB_INVALID_MASK))) {
 #ifdef ALIGNED_ONLY
-        cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
-        env->invalid_addr = addr;
-        env->invalid_error = UC_ERR_WRITE_UNALIGNED;
-        cpu_exit(uc->current_cpu);
-        return;
+			if ((addr & (DATA_SIZE - 1)) != 0) {
+				//cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
+				//                     mmu_idx, retaddr);
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_WRITE_UNALIGNED;
+				cpu_exit(uc->current_cpu);
+				return;
+			}
 #endif
-        /* XXX: not efficient, but simple */
-        /* Note: relies on the fact that tlb_fill() does not remove the
-         * previous page from the TLB cache.  */
-        for (i = DATA_SIZE - 1; i >= 0; i--) {
-            /* Little-endian extract.  */
-            uint8_t val8 = (uint8_t)(val >> (i * 8));
-            // size already treated, this is used only for diabling the write cb
-            uc->size_recur_mem = DATA_SIZE - i ;
-            /* Note the adjustment at the beginning of the function.
-               Undo that for the recursion.  */
-            glue(helper_ret_stb, MMUSUFFIX)(env, addr + i, val8,
-                                            mmu_idx, retaddr + GETPC_ADJ);
-            if (env->invalid_error != UC_ERR_OK)
-                break;
-        }
-        uc->size_recur_mem = 0;
-        return;
-    }
+			if (!victim_tlb_hit_write(env, addr, mmu_idx, index)) {
+				tlb_fill(ENV_GET_CPU(env), addr, MMU_DATA_STORE, mmu_idx, retaddr);
+			}
+			tlb_addr = env->tlb_table[mmu_idx][index].addr_write;
+		}
 
-    /* Handle aligned access or unaligned access in the same page.  */
+		/* Handle an IO access.  */
+		if (unlikely(tlb_addr & ~TARGET_PAGE_MASK)) {
+			hwaddr ioaddr;
+			if ((addr & (DATA_SIZE - 1)) != 0) {
+				goto do_unaligned_access;
+			}
+			ioaddr = env->iotlb[mmu_idx][index];
+			if (ioaddr == 0) {
+				env->invalid_addr = addr;
+				env->invalid_error = UC_ERR_WRITE_UNMAPPED;
+				// printf("***** Invalid memory write at " TARGET_FMT_lx "\n", addr);
+				cpu_exit(env->uc->current_cpu);
+				return;
+			}
+
+			/* ??? Note that the io helpers always read data in the target
+			   byte ordering.  We should push the LE/BE request down into io.  */
+			val = TGT_LE(val);
+			glue(io_write, SUFFIX)(env, ioaddr, val, addr, retaddr);
+			return;
+		}
+
+		/* Handle slow unaligned access (it spans two pages or IO).  */
+		if (DATA_SIZE > 1
+			&& unlikely((addr & ~TARGET_PAGE_MASK) + DATA_SIZE - 1
+				>= TARGET_PAGE_SIZE)) {
+			int i;
+		do_unaligned_access:
 #ifdef ALIGNED_ONLY
-    if ((addr & (DATA_SIZE - 1)) != 0) {
-        cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
-        env->invalid_addr = addr;
-        env->invalid_error = UC_ERR_WRITE_UNALIGNED;
-        cpu_exit(uc->current_cpu);
-        return;
-    }
+			cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
+				mmu_idx, retaddr);
+			env->invalid_addr = addr;
+			env->invalid_error = UC_ERR_WRITE_UNALIGNED;
+			cpu_exit(uc->current_cpu);
+			return;
+#endif
+			/* XXX: not efficient, but simple */
+			/* Note: relies on the fact that tlb_fill() does not remove the
+			 * previous page from the TLB cache.  */
+			for (i = DATA_SIZE - 1; i >= 0; i--) {
+				/* Little-endian extract.  */
+				uint8_t val8 = (uint8_t)(val >> (i * 8));
+				// size already treated, this is used only for diabling the write cb
+				uc->size_recur_mem = DATA_SIZE - i;
+				/* Note the adjustment at the beginning of the function.
+				   Undo that for the recursion.  */
+				glue(helper_ret_stb, MMUSUFFIX)(env, addr + i, val8,
+					mmu_idx, retaddr + GETPC_ADJ);
+				if (env->invalid_error != UC_ERR_OK)
+					break;
+			}
+			uc->size_recur_mem = 0;
+			return;
+		}
+
+		/* Handle aligned access or unaligned access in the same page.  */
+#ifdef ALIGNED_ONLY
+		if ((addr & (DATA_SIZE - 1)) != 0) {
+			cpu_unaligned_access(ENV_GET_CPU(env), addr, MMU_DATA_STORE,
+				mmu_idx, retaddr);
+			env->invalid_addr = addr;
+			env->invalid_error = UC_ERR_WRITE_UNALIGNED;
+			cpu_exit(uc->current_cpu);
+			return;
+		}
 #endif
 
-    haddr = (uintptr_t)(addr + env->tlb_table[mmu_idx][index].addend);
+		haddr = (uintptr_t)(addr + env->tlb_table[mmu_idx][index].addend);
 #if DATA_SIZE == 1
-    glue(glue(st, SUFFIX), _p)((uint8_t *)haddr, val);
+		glue(glue(st, SUFFIX), _p)((uint8_t*)haddr, val);
 #else
-    glue(glue(st, SUFFIX), _le_p)((uint8_t *)haddr, val);
+		glue(glue(st, SUFFIX), _le_p)((uint8_t*)haddr, val);
 #endif
+	}
 }
 
 #if DATA_SIZE > 1

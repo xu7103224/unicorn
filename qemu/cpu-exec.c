@@ -223,6 +223,40 @@ int cpu_exec(struct uc_struct *uc, CPUArchState *env)   // qq
 
                 tb = tb_find_fast(env);	// qq
                 if (!tb) {   // invalid TB due to invalid code?
+					bool handled = false;
+					struct list_item* cur;
+					struct hook* hook;
+
+
+					TranslationBlock* tb;
+					target_ulong cs_base, pc;
+					int flags;
+					/* we record a subset of the CPU state. It will
+					   always be the same before a given translated block
+					   is executed. */
+					cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+
+					// sync PC in CPUArchState with address
+					if (uc->set_pc) {
+						uc->set_pc(uc, pc);
+					}
+
+					for (cur = uc->hook[02].head; cur != NULL && (hook = (struct hook*)cur->data); cur = cur->next) {
+						if (hook->to_delete)
+							continue;
+						if (HOOK_BOUND_CHECK(hook, (uint64_t)pc)) {
+							handled = ((uc_cb_hookjumpexception_t)hook->callback)(uc, pc, 0, hook->user_data);
+						}
+					}
+					if (handled) {
+						continue;
+					}
+
+					//	if (hook->to_delete)
+					//		continue;
+					//	handled = ((uc_cb_mem_operating_t)hook->callback)(env->uc, UC_MEM_READING, pc, DATA_SIZE, &res, hook->user_data);
+					//}
+
                     uc->invalid_error = UC_ERR_FETCH_UNMAPPED;
                     ret = EXCP_HLT;
                     break;
