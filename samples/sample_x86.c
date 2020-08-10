@@ -1132,13 +1132,246 @@ typedef struct {
     REG edi;
     REG esp;
     REG ebp;
+    REG efl;
 }X86RegInfo;
+
+void agent(void* fn, X86RegInfo* before, X86RegInfo* after) {
+    //该函数不能有参数，必须从内存中把参数些为立即数
+    __asm {
+        pushad
+        mov eax, before.efl
+
+        mov eax, before.eax
+        mov ebx, before.ebx
+        mov ecx, before.ecx
+        mov edx, before.edx
+        mov esi, before.esi
+        mov edi, before.edi
+        mov esp, before.esp
+        mov ebp, before.ebp
+        call fn
+        mov after.eax, eax
+        mov after.ebx, ebx
+        mov after.ecx, ecx
+        mov after.edx, edx
+        mov after.esi, esi
+        mov after.edi, edi
+        mov after.esp, esp
+        mov after.ebp, ebp
+        popad
+    }
+}
+
+//019EDE53     A1 78563412    MOV EAX, DWORD PTR DS : [12345678]
+//019EDE58     8B1D 78563412  MOV EBX, DWORD PTR DS : [12345678]
+//019EDE5E     8B0D 78563412  MOV ECX, DWORD PTR DS : [12345678]
+//019EDE64     8B15 78563412  MOV EDX, DWORD PTR DS : [12345678]
+//019EDE6A     8B35 78563412  MOV ESI, DWORD PTR DS : [12345678]
+//019EDE70     8B3D 78563412  MOV EDI, DWORD PTR DS : [12345678]
+//019EDE76     8B25 78563412  MOV ESP, DWORD PTR DS : [12345678]
+//019EDE7C     8B2D 78563412  MOV EBP, DWORD PTR DS : [12345678]
+//019EDE82     E8 F1779510    CALL 12345678
+//019EDE87     A3 78563412    MOV DWORD PTR DS : [12345678] , EAX
+//019EDE8C     891D 78563412  MOV DWORD PTR DS : [12345678] , EBX
+//019EDE92     890D 78563412  MOV DWORD PTR DS : [12345678] , ECX
+//019EDE98     8915 78563412  MOV DWORD PTR DS : [12345678] , EDX
+//019EDE9E     8935 78563412  MOV DWORD PTR DS : [12345678] , ESI
+//019EDEA4     893D 78563412  MOV DWORD PTR DS : [12345678] , EDI
+//019EDEAA     8925 78563412  MOV DWORD PTR DS : [12345678] , ESP
+//019EDEB0     892D 78563412  MOV DWORD PTR DS : [12345678] , EBP
+
+#pragma pack(push)
+#pragma pack(1)
+typedef struct {
+    uint8_t cmd;
+    uint8_t *address;
+}MovContentAndEax;
+typedef struct {
+    uint8_t cmd[2];
+    uint8_t *address;
+}MovContentAndOtherReg;
+//019EDEB7     50             PUSH EAX
+//019EDEB8     9C             PUSHFD
+//019EDEB9     58             POP EAX
+//019EDEBA     A3 78563412    MOV DWORD PTR DS : [12345678] , EAX
+//019EDEBF     58             POP EAX
+typedef struct {
+    uint8_t cmd1[4];
+    uint8_t* address;
+    uint8_t cmd2;
+}MovEFlagsToContent;
+//019EDEC1     50             PUSH EAX
+//019EDEC2     A1 78563412    MOV EAX, DWORD PTR DS : [12345678]
+//019EDEC7     50             PUSH EAX
+//019EDEC8     9D             POPFD
+//019EDEC9     58             POP EAX
+typedef struct {
+    uint8_t cmd1[2];
+    uint8_t* address;
+    uint8_t cmd2[3];
+}MovContentToEFlags;
+typedef struct {                 //mov reg, [addr]  //mov [addr], reg
+    MovContentAndEax eax;        //0xA1             //0xA3
+    MovContentAndOtherReg ebx;   //0x8B1D           //0x891D
+    MovContentAndOtherReg ecx;   //0x8B0D           //0x890D
+    MovContentAndOtherReg edx;   //0x8B15           //0x8915
+    MovContentAndOtherReg esi;   //0x8B35           //0x8935
+    MovContentAndOtherReg edi;   //0x8B3D           //0x893D
+    MovContentAndOtherReg esp;   //0x8B25           //0x8925
+    MovContentAndOtherReg ebp;   //0x8B2D           //0x892D
+} MovContentAndRegs;
+typedef struct {
+    uint8_t cmd;
+    uint8_t* address;
+}CallAddress;
+//019EDED0     83C4 04        ADD ESP,4
+//019EDED3     FF6424 FC      JMP DWORD PTR SS : [ESP - 4]
+typedef struct {
+    uint8_t cmd[7];
+}RetAddress;
+typedef struct {
+    MovEFlagsToContent bakupCurrentEFlags;
+    MovContentAndRegs bakupCurrentContext;
+    MovContentToEFlags setupVMEFlags;
+    MovContentAndRegs setupVMContext;
+    CallAddress call;
+    MovEFlagsToContent bakupVMEFlags;
+    MovContentAndRegs bakupVMContext;
+    MovContentAndRegs setupCurrentContext;
+    MovContentToEFlags setupCurrentEFlags;
+    uint8_t retcmd;
+}InvokeAgent;
+typedef struct {
+    MovContentToEFlags setupVMEFlags;
+    MovContentAndRegs setupVMContext;
+    uint8_t lastcmd[0x20];
+    RetAddress ret;
+}RetAgent;
+#pragma pack(pop)
+
+void initBackupEFlags(MovEFlagsToContent *cmdBuffer) {
+    //019EDEB7     50             PUSH EAX
+    //019EDEB8     9C             PUSHFD
+    //019EDEB9     58             POP EAX
+    //019EDEBA     A3 78563412    MOV DWORD PTR DS : [12345678] , EAX
+    //019EDEBF     58             POP EAX
+    *(uint32_t*)cmdBuffer->cmd1 = 0xA3589C50;
+    cmdBuffer->cmd2 = 0x58;
+}
+
+void initSetupEFlags(MovContentToEFlags* cmdBuffer) {
+    //019EDEC1     50             PUSH EAX
+    //019EDEC2     A1 78563412    MOV EAX, DWORD PTR DS : [12345678]
+    //019EDEC7     50             PUSH EAX
+    //019EDEC8     9D             POPFD
+    //019EDEC9     58             POP EAX
+    *(uint16_t*)cmdBuffer->cmd1 = 0xA150;
+    cmdBuffer->cmd2[0] = 0x50;
+    cmdBuffer->cmd2[1] = 0x9D;
+    cmdBuffer->cmd2[2] = 0x58;
+}
+
+void initRegsBackupCmd(MovContentAndRegs *cmdBuffer) {
+    cmdBuffer->eax.cmd = 0xA3;
+    *(uint16_t*)cmdBuffer->ebx.cmd = 0x1D89;
+    *(uint16_t*)cmdBuffer->ecx.cmd = 0x0D89;
+    *(uint16_t*)cmdBuffer->edx.cmd = 0x1589;
+    *(uint16_t*)cmdBuffer->esi.cmd = 0x3589;
+    *(uint16_t*)cmdBuffer->edi.cmd = 0x3D89;
+    *(uint16_t*)cmdBuffer->esp.cmd = 0x2589;
+    *(uint16_t*)cmdBuffer->ebp.cmd = 0x2D89;
+}
+
+void initRegsSetupCmd(MovContentAndRegs* cmdBuffer) {
+    cmdBuffer->eax.cmd = 0xA1;
+    *(uint16_t*)cmdBuffer->ebx.cmd = 0x1D8B;
+    *(uint16_t*)cmdBuffer->ecx.cmd = 0x0D8B;
+    *(uint16_t*)cmdBuffer->edx.cmd = 0x158B;
+    *(uint16_t*)cmdBuffer->esi.cmd = 0x358B;
+    *(uint16_t*)cmdBuffer->edi.cmd = 0x3D8B;
+    *(uint16_t*)cmdBuffer->esp.cmd = 0x258B;
+    *(uint16_t*)cmdBuffer->ebp.cmd = 0x2D8B;
+}
+
+void initCallCmd(CallAddress* call) {
+    call->cmd = 0xE8;
+}
+
+void initRetCmd(RetAddress* ret) {
+    uint8_t cmd[] = { 0x83, 0xC4, 0x04, 0xFF, 0x64, 0x24, 0xFC };
+    memcpy(ret->cmd, cmd, sizeof(cmd));
+}
+
+void setBackupEFlagsCmdParam(MovEFlagsToContent* cmdBuffer, X86RegInfo* param) {
+    cmdBuffer->address = &param->efl;
+}
+
+void setSetupEFlagsCmdParam(MovContentToEFlags* cmdBuffer, X86RegInfo* param) {
+    cmdBuffer->address = &param->efl;
+}
+
+void setRegCmdParam(MovContentAndRegs* cmdBuffer, X86RegInfo* param) {
+    cmdBuffer->eax.address = &param->eax;
+    cmdBuffer->ebx.address = &param->ebx;
+    cmdBuffer->ecx.address = &param->ecx;
+    cmdBuffer->edx.address = &param->edx;
+    cmdBuffer->esi.address = &param->esi;
+    cmdBuffer->edi.address = &param->edi;
+    cmdBuffer->esp.address = &param->esp;
+    cmdBuffer->ebp.address = &param->ebp;
+}
+
+void setCallCmdParam(CallAddress* call, void *address) {
+    call->address = (uint32_t)address - (uint32_t)call - 5;
+}
+
+void initCallAgent(InvokeAgent* agent) {
+    uint32_t oldp;
+    VirtualProtect(agent, sizeof(InvokeAgent), PAGE_EXECUTE_READWRITE, &oldp);
+    memset(agent, 0x90, sizeof(InvokeAgent));
+    initBackupEFlags(&agent->bakupCurrentEFlags);
+    initRegsBackupCmd(&agent->bakupCurrentContext);
+    initSetupEFlags(&agent->setupVMEFlags);
+    initRegsSetupCmd(&agent->setupVMContext);
+    initCallCmd(&agent->call);
+    initBackupEFlags(&agent->bakupVMEFlags);
+    initRegsBackupCmd(&agent->bakupVMContext);
+    initRegsSetupCmd(&agent->setupCurrentContext);
+    initSetupEFlags(&agent->setupCurrentEFlags);
+    agent->retcmd = 0xC3;
+}
+void resetCallAgent(InvokeAgent*agent, void* fn, X86RegInfo* vminfo, X86RegInfo* realinfo) {
+    setBackupEFlagsCmdParam(&agent->bakupCurrentEFlags, realinfo);
+    setRegCmdParam(&agent->bakupCurrentContext, realinfo);
+    setSetupEFlagsCmdParam(&agent->setupVMEFlags, vminfo);
+    setRegCmdParam(&agent->setupVMContext, vminfo);
+    setCallCmdParam(&agent->call, fn);
+    setBackupEFlagsCmdParam(&agent->bakupVMEFlags, vminfo);
+    setRegCmdParam(&agent->bakupVMContext, vminfo);
+    setRegCmdParam(&agent->setupCurrentContext, realinfo);
+    setSetupEFlagsCmdParam(&agent->setupCurrentEFlags, realinfo);
+}
+void initRetAgent(RetAgent* agent) {
+    uint32_t oldp;
+    VirtualProtect(agent, sizeof(RetAgent), PAGE_EXECUTE_READWRITE, &oldp);
+    memset(agent, 0x90, sizeof(RetAgent));
+    initSetupEFlags(&agent->setupVMEFlags);
+    initRegsSetupCmd(&agent->setupVMContext);
+    initRetCmd(&agent->ret);
+}
+void resetRetAgent(RetAgent* agent, X86RegInfo* vminfo, uint8_t *cmd, size_t cmdsize) {
+    setSetupEFlagsCmdParam(&agent->setupVMEFlags, vminfo);
+    memcpy(agent->lastcmd, cmd, cmdsize);
+    setRegCmdParam(&agent->setupVMContext, vminfo);
+}
 
 typedef struct {
     uint32_t id;
     uint8_t stub[STUB_SIZE];
     uint8_t springboard[SPRING_BOARD_SIZE];
 	uint8_t enterVM[SPRING_BOARD_SIZE];
+    InvokeAgent invokeAgent;
+    RetAgent invokeRetAgent;
     FixContent fix;
     size_t fixSize;
     uint8_t* fn;
@@ -1166,6 +1399,22 @@ bool initCS() {
 
 int disasm(uint8_t* code, size_t size, uint64_t address, cs_insn** insn) {
     return cs_disasm(handle, code, size, address, 0, insn);
+}
+
+
+void printRegs(uc_engine* uc) {
+    uint32_t eax, ebx, ecx, edx, esi, edi, esp, ebp;
+    uc_reg_read(uc, UC_X86_REG_EAX, &eax);
+    uc_reg_read(uc, UC_X86_REG_EBX, &ebx);
+    uc_reg_read(uc, UC_X86_REG_ECX, &ecx);
+    uc_reg_read(uc, UC_X86_REG_EDX, &edx);
+    uc_reg_read(uc, UC_X86_REG_ESI, &esi);
+    uc_reg_read(uc, UC_X86_REG_EDI, &edi);
+    uc_reg_read(uc, UC_X86_REG_ESP, &esp);
+    uc_reg_read(uc, UC_X86_REG_EBP, &ebp);
+
+    printf("eax:0x%08x ebx:0x%08x ecx:0x%08x edx:0x%08x esi:0x%08x edi:0x%08x esp:0x%08x ebp:0x%08x \n",
+        eax, ebx, ecx, edx, esi, edi, esp, ebp);
 }
 
 bool genStub(uint8_t *stub, size_t stubSizeOfByte, uint8_t *address, cs_insn* insn, size_t insnNum) {
@@ -1199,19 +1448,6 @@ void genSpringBoard(uint8_t* base, uint32_t id, uint8_t* address) {
     uint32_t size = 0;
     VirtualProtect(base, pos, PAGE_EXECUTE_READWRITE, &size);
 }
-
-//008EDE5A      55            push    ebp
-//008EDE59      54            push    esp
-//008EDE57      57            push    edi
-//008EDE58      56            push    esi
-//008EDE56      52            push    edx
-//008EDE55      51            push    ecx
-//008EDE54      53            push    ebx
-//008EDE53      50            push    eax
-//008EDE5B      E8 A02171FF   call    00000000
-//008EDE60	  E9 9C2171FF   jmp     00000001
-//008EDE65      90            nop
-//008EDE66      90            nop
 
 
 //void NAKED enterVM() {
@@ -1345,7 +1581,7 @@ void startVM(HookInfo* hookInfo, uint8_t* code, size_t length)
 		"edi:0x%08x \n"
 		"esp:0x%08x \n"
 		"ebp:0x%08x \n"
-		"}", hookInfo->regs.eax, hookInfo->regs.ebx, hookInfo->regs.ecx, hookInfo->regs.edx, hookInfo->regs.esi, hookInfo->regs.edi, hookInfo->regs.esp, hookInfo->regs.ebp);
+		"}\n", hookInfo->regs.eax, hookInfo->regs.ebx, hookInfo->regs.ecx, hookInfo->regs.edx, hookInfo->regs.esi, hookInfo->regs.edi, hookInfo->regs.esp, hookInfo->regs.ebp);
 
 
 
@@ -1376,8 +1612,8 @@ void __stdcall saveContext(REG eax, REG ebx, REG ecx, REG edx, REG esi, REG edi,
 	hi->regs.edx = edx;
 	hi->regs.esi = esi;
 	hi->regs.edi = edi;
-	hi->regs.esp = esp;
-	hi->regs.esp = ebp;
+	hi->regs.esp = esp+8;
+	hi->regs.ebp = ebp;
 	
 	startVM(hi, g_hook_code, hi->fnrange);
 }
@@ -1403,6 +1639,8 @@ bool makeHook(uint8_t *fn, size_t protectedRange, void *fakefn, HookInfo *hookin
         genStub(hookinfo->stub, STUB_SIZE, fn, insn, i);
         genSpringBoard(hookinfo->springboard, hookinfo->id, hookinfo->enterVM);
 		genEnterVM(hookinfo->enterVM, getDebugFunctionAddress(saveContext), (uint32_t)fn+protectedRange);
+        initCallAgent(&hookinfo->invokeAgent);
+        initRetAgent(&hookinfo->invokeRetAgent);
     }
     
 	//install hook
@@ -1443,30 +1681,6 @@ void example(int *ret, int a, int b) {
 }
 
 
-void agent(void* fn, X86RegInfo* before, X86RegInfo* after) {
-	//该函数不能有参数，必须从内存中把参数些为立即数
-    __asm {
-        pushad
-        mov eax, before.eax
-		mov ebx, before.ebx
-		mov ecx, before.ecx
-		mov edx, before.edx
-		mov esi, before.esi
-		mov edi, before.edi
-		mov esp, before.esp
-		mov ebp, before.ebp
-		call fn
-		mov after.eax, eax
-		mov after.ebx, ebx
-		mov after.ecx, ecx
-		mov after.edx, edx
-		mov after.esi, esi
-		mov after.edi, edi
-		mov after.esp, esp
-		mov after.ebp, ebp
-        popad
-    }
-}
 
 void testHook();
 void initHook() {
@@ -1492,48 +1706,81 @@ static int hook_code2(uc_engine* uc, uint64_t address, uint32_t size, void* user
 	static 
 	HookInfo* hi = &g_HookInfo[HOOKINFO_ID];
     uint8_t instr_bytes[100] = { 0 };
-    uc_mem_read(uc, address, instr_bytes, size);
+    uc_mem_read(uc, address, instr_bytes, 0x20);
 	cs_insn* insn = NULL;
     size_t count = 0;
+    bool ret = false;
+
+    //test print
+    printRegs(uc);
 
 	if (size) {
-		count = disasm(instr_bytes, size, address, &insn);
+		count = disasm(instr_bytes, 0x20, address, &insn);
 		printf("0x%" PRIx64 ":\t%s\t%s\n", insn[0].address, insn[0].mnemonic, insn[0].op_str);
 	}
 	else {
 		printf("0x% jump exception", address);
 	}
+    if (insn) {
+        if (insn[1].bytes[0] == 0xC3) {
+            X86RegInfo vm;
+            memset(&vm, 0x0, sizeof(X86RegInfo));
+            uc_reg_read(uc, UC_X86_REG_EAX, &vm.eax);
+            uc_reg_read(uc, UC_X86_REG_EBX, &vm.ebx);
+            uc_reg_read(uc, UC_X86_REG_ECX, &vm.ecx);
+            uc_reg_read(uc, UC_X86_REG_EDX, &vm.edx);
+            uc_reg_read(uc, UC_X86_REG_ESI, &vm.esi);
+            uc_reg_read(uc, UC_X86_REG_EDI, &vm.edi);
+            uc_reg_read(uc, UC_X86_REG_ESP, &vm.esp);
+            uc_reg_read(uc, UC_X86_REG_EBP, &vm.ebp);
+            uc_reg_read(uc, UC_X86_REG_EFLAGS, &vm.efl);
+            resetRetAgent(&hi->invokeRetAgent, &vm, insn[0].bytes, insn[0].size);
+            ((void(*)()) &hi->invokeRetAgent)();//该函数不返回
+        }
+        else if (insn->bytes[0] == 0xE8) {
+            uint32_t eip, esp, efl;
+            uc_reg_read(uc, UC_X86_REG_EIP, &eip);
+            uc_reg_read(uc, UC_X86_REG_ESP, &esp);
+            uc_reg_read(uc, UC_X86_REG_EFLAGS, &efl);
+            uint8_t* target = *(uint32_t*)&insn->bytes[1] + eip + 5;
 
-			
-	if (oldinsn.bytes[0] == 0xE8 || size == 0) {
-		if (!inRange(address, hi->fn, hi->fn + hi->fnrange)) {
-			X86RegInfo before, after;
-			uc_reg_read(uc, UC_X86_REG_EAX, &before.eax);
-			uc_reg_read(uc, UC_X86_REG_EBX, &before.ebx);
-			uc_reg_read(uc, UC_X86_REG_ECX, &before.ecx);
-			uc_reg_read(uc, UC_X86_REG_EDX, &before.edx);
-			uc_reg_read(uc, UC_X86_REG_ESI, &before.esi);
-			uc_reg_read(uc, UC_X86_REG_EDI, &before.edi);
-			uc_reg_read(uc, UC_X86_REG_ESP, &before.esp);
-			uc_reg_read(uc, UC_X86_REG_EBP, &before.ebp);
+            if (!inRange(target, hi->fn, hi->fn + hi->fnrange)) {
+                X86RegInfo vm, rm;
+                memset(&vm, 0x0, sizeof(X86RegInfo));
+                memset(&rm, 0x0, sizeof(X86RegInfo));
+                uc_reg_read(uc, UC_X86_REG_EAX, &vm.eax);
+                uc_reg_read(uc, UC_X86_REG_EBX, &vm.ebx);
+                uc_reg_read(uc, UC_X86_REG_ECX, &vm.ecx);
+                uc_reg_read(uc, UC_X86_REG_EDX, &vm.edx);
+                uc_reg_read(uc, UC_X86_REG_ESI, &vm.esi);
+                uc_reg_read(uc, UC_X86_REG_EDI, &vm.edi);
+                uc_reg_read(uc, UC_X86_REG_ESP, &vm.esp);
+                uc_reg_read(uc, UC_X86_REG_EBP, &vm.ebp);
+                uc_reg_read(uc, UC_X86_REG_EFLAGS, &vm.efl);
 
-			agent(address, &before, &after);
+                //agent(address, &vm, &rm);
 
-			uc_reg_write(uc, UC_X86_REG_EAX, &after.eax);
-			uc_reg_write(uc, UC_X86_REG_EBX, &after.ebx);
-			uc_reg_write(uc, UC_X86_REG_ECX, &after.ecx);
-			uc_reg_write(uc, UC_X86_REG_EDX, &after.edx);
-			uc_reg_write(uc, UC_X86_REG_ESI, &after.esi);
-			uc_reg_write(uc, UC_X86_REG_EDI, &after.edi);
-			uc_reg_write(uc, UC_X86_REG_ESP, &after.esp);
-			uc_reg_write(uc, UC_X86_REG_EBP, &after.ebp);
+                resetCallAgent(&hi->invokeAgent, target, &vm, &rm);
+                ((void(*)()) & hi->invokeAgent)();
 
-			oldeip += 5;
-			uc_reg_write(uc, UC_X86_REG_EIP, &oldeip);
+                uc_reg_write(uc, UC_X86_REG_EIP, &eip);
+                uc_reg_write(uc, UC_X86_REG_EAX, &vm.eax);
+                uc_reg_write(uc, UC_X86_REG_EBX, &vm.ebx);
+                uc_reg_write(uc, UC_X86_REG_ECX, &vm.ecx);
+                uc_reg_write(uc, UC_X86_REG_EDX, &vm.edx);
+                uc_reg_write(uc, UC_X86_REG_ESI, &vm.esi);
+                uc_reg_write(uc, UC_X86_REG_EDI, &vm.edi);
+                uc_reg_write(uc, UC_X86_REG_ESP, &vm.esp);
+                uc_reg_write(uc, UC_X86_REG_EBP, &vm.ebp);
+                uc_reg_write(uc, UC_X86_REG_EFLAGS, &vm.efl);
 
-			goto Exit;
-		}
-	}
+                eip += 5;
+                uc_reg_write(uc, UC_X86_REG_EIP, &eip);
+                ret = true;
+                goto Exit;
+            }
+        }
+    }
 	uc_reg_read(uc, UC_X86_REG_EIP, &oldeip);
 
 Exit:
@@ -1542,7 +1789,7 @@ Exit:
 		cs_free(insn, count);
 	}
 
-	return 0;
+	return ret;
 }
 
 bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
@@ -1699,7 +1946,7 @@ void testHook() {
 	int b = 33;
 	int c = 0;
 
-	example(c, a, b);
+	example(&c, a, b);
 }
 
 // EXTERN_C ULONG64 myAdd(ULONG64 u1, ULONG64 u2);
@@ -1713,6 +1960,7 @@ int main(int argc, char** argv, char** envp)
 
     //int a = myAdd(10, 20);
 	//test_i386_invalid_mem_write();
+
 	initHook();
 	testHook();
 
