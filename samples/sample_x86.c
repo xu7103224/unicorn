@@ -1941,6 +1941,21 @@ static void test_i386hook(void)
 	uc_close(uc);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void testHook() {
 	int a = 10;
 	int b = 33;
@@ -1949,7 +1964,8 @@ void testHook() {
 	example(&c, a, b);
 }
 
-// EXTERN_C ULONG64 myAdd(ULONG64 u1, ULONG64 u2);
+
+
 int main(int argc, char** argv, char** envp)
 {
 
@@ -1959,12 +1975,10 @@ int main(int argc, char** argv, char** envp)
 	}
 
     //int a = myAdd(10, 20);
-	//test_i386_invalid_mem_write();
 
-	initHook();
-	testHook();
+	initHook();//初始化虚拟机保护
+	testHook();//测试函数
 
-	//test_i386hook();
 
 	return 0;
 }
