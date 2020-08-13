@@ -1088,8 +1088,19 @@ int main(int argc, char** argv, char** envp)
 //0193DE53     8B00                 MOV EAX, DWORD PTR DS : [EAX]
 //0193DE55     05 00100000          ADD EAX, 1000
 //0193DE5A     0305 FFFFFFFF        ADD EAX, DWORD PTR DS : [FFFFFFFF]
+//#define TEST_HOOK_CODE_BUFF {0x8B,0x00,0x05,0x00,0x10,0x00,0x00,0xE8,0x01,0x01,0x02,0x02,0x03,0x05,0xFF,0xFF,0xFF,0xFF}
 
-#define TEST_HOOK_CODE "\x8B\x00\x05\x00\x10\x00\x00\xE8\x01\x01\x02\x02\x03\x05\xFF\xFF\xFF\xFF"
+//019FDE53 > B8 01000000    MOV EAX, 1
+//019FDE58     B9 01000000    MOV ECX, 1
+//019FDE5D     33D2           XOR EDX, EDX
+//019FDE5F     8BD0           MOV EDX, EAX
+//019FDE61     03D1           ADD EDX, ECX
+//019FDE63     90             NOP
+//019FDE64     90             NOP
+//019FDE65     90             NOP
+//019FDE66     90             NOP
+#define TEST_HOOK_CODE_BUFF {0xB8,0x01,0x00,0x00,0x00,0xB9,0x01,0x00,0x00,0x00,0x33,0xD2,0x8B,0xD0,0x03,0xD1,0x90,0x90,0x90,0x90}
+static uint8_t TEST_HOOK_CODE[] = TEST_HOOK_CODE_BUFF;
 #define TEST_HOOK_CODE_SIZE     sizeof(TEST_HOOK_CODE)
 #define REG						uint32_t
 #define NAKED					__declspec(naked)
@@ -1849,20 +1860,20 @@ bool mem_read_operation_invalid(uc_engine* uc, uc_mem_type type,
             printf("UC_MEM_FETCH_PROT HOOK\r\n");
             return true;
 	    }break;
-        case UC_MEM_READING:
-        {
-            void* returnData = (void*)value;
-            memcpy(returnData, address, size);
-            printf("UC_MEM_READING HOOK\r\n");
-            return true;
-        }break;
-		case UC_MEM_WRITING:
-		{
-			void* returnData = (void*)value;
-			memcpy(returnData, address, size);
-			printf("UC_MEM_READING HOOK\r\n");
-			return true;
-		}break;
+  //      case UC_MEM_READING:
+  //      {
+  //          void* returnData = (void*)value;
+  //          memcpy(returnData, address, size);
+  //          printf("UC_MEM_READING HOOK\r\n");
+  //          return true;
+  //      }break;
+		//case UC_MEM_WRITING:
+		//{
+		//	void* returnData = (void*)value;
+		//	memcpy(returnData, address, size);
+		//	printf("UC_MEM_READING HOOK\r\n");
+		//	return true;
+		//}break;
 
 
 	}
@@ -1928,7 +1939,7 @@ static void test_i386hook(void)
 
 	uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
 
-	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code2, NULL, 1, 0);
+	uc_hook_add(uc, &trace2, UC_HOOK_CODE, hook_code, NULL, 1, 0);
 
 	err = uc_emu_start(uc, ADDRESS, ADDRESS + sizeof(X86_CODE32) - 1, 0, 0);
 	if (err) {
@@ -1969,6 +1980,9 @@ void testHook() {
 int main(int argc, char** argv, char** envp)
 {
 
+    test_i386hook();
+    return 0;
+
 	if (!initCS()) {
 		printf("Failed on initCS() with error returned: %u\n", 0);
 		return;
@@ -1976,8 +1990,8 @@ int main(int argc, char** argv, char** envp)
 
     //int a = myAdd(10, 20);
 
-	initHook();//初始化虚拟机保护
-	testHook();//测试函数
+	initHook();//
+	testHook();//
 
 
 	return 0;
