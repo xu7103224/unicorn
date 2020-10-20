@@ -24,6 +24,12 @@ static void hook_code(uc_engine *uc, uint64_t address, uint32_t size, void *user
     printf(">>> Tracing instruction at 0x%"PRIx64 ", instruction size = 0x%x\n", address, size);
 }
 
+// callback for tracing instructions, detect HLT and terminate emulation
+static void mem_hook_i386(uc_engine* uc, uint64_t addr, uint32_t size, void* user_data)
+{
+ 
+}
+
 static void test_arm(void)
 {
     uc_engine *uc;
@@ -56,7 +62,7 @@ static void test_arm(void)
     uc_reg_write(uc, UC_ARM_REG_R2, &r2);
     uc_reg_write(uc, UC_ARM_REG_R3, &r3);
 
-	uc_assert_success(uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED, mem_hook_i386, NULL, 1, 0));
+	uc_hook_add(uc, &trace1, UC_HOOK_MEM_READ_UNMAPPED, mem_hook_i386, NULL, 1, 0);
 
     // tracing all basic blocks with customized callback
     uc_hook_add(uc, &trace1, UC_HOOK_BLOCK, hook_block, NULL, 1, 0);
